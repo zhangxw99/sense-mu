@@ -72,9 +72,17 @@ export default defineConfig(async () => {
     optimizeDeps: {
       exclude: ["lucide-react"],
     },
-    server: isCodexSeatbeltSandbox
-      ? { watch: { useFsEvents: false, usePolling: true } }
-      : undefined,
+    server: {
+      proxy: {
+        "/jeecg-boot": {
+          target: "http://localhost:8080",
+          changeOrigin: true,
+        },
+      },
+      watch: isCodexSeatbeltSandbox
+        ? { useFsEvents: false, usePolling: true }
+        : undefined,
+    },
     plugins: [
       vinext(),
       sites(),

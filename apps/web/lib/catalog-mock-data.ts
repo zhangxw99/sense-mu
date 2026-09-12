@@ -1439,15 +1439,17 @@ export function decorateAlgorithmListing(listing: MarketplaceListing, index = 0)
     ...listing,
     is_mock: false,
     preview,
-    metrics: [
-      { label: "调用状态", value: "可用" },
-      { label: "模型版本", value: `v${listing.model_version_number}` },
-      { label: "月度额度", value: listing.monthly_quota_units.toLocaleString("zh-CN") },
-    ],
-    classes: [],
-    model_architecture: listing.model_name,
-    input_size: "按接口说明",
-    latency_p95: "待供应商公布",
+    metrics: listing.metrics?.length
+      ? listing.metrics
+      : [
+        { label: "调用状态", value: "可用" },
+        { label: "模型版本", value: `v${listing.model_version_number}` },
+        { label: "月度额度", value: listing.monthly_quota_units.toLocaleString("zh-CN") },
+      ],
+    classes: listing.classes ?? [],
+    model_architecture: listing.model_architecture ?? listing.model_name,
+    input_size: listing.input_size ?? "按接口说明",
+    latency_p95: listing.latency_p95 ?? "待供应商公布",
     evaluation_basis: "以供应商发布的验收材料为准",
     updated_label: listing.published_at ? listing.published_at.slice(0, 10) : "近期发布",
   };

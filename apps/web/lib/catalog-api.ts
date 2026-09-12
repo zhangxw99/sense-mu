@@ -698,6 +698,11 @@ export type MarketplaceListing = {
   subscription_id: string | null;
   subscription_status: string | null;
   remaining_units: number | null;
+  metrics?: { label: string; value: string }[];
+  classes?: string[];
+  model_architecture?: string;
+  input_size?: string;
+  latency_p95?: string;
 };
 
 export type MarketplaceListingSubmission = MarketplaceListing & {
@@ -865,6 +870,16 @@ function apiBaseUrl(): string {
   throw new Error("SenseMu API 尚未配置");
 }
 
+function jeecgMarketplaceListUrl(): string {
+  const viteEnv = (import.meta as unknown as {
+    env?: Record<string, string | undefined>;
+  }).env;
+  const configured = viteEnv?.VITE_JEECG_MARKETPLACE_LIST_URL
+    ?? viteEnv?.NEXT_PUBLIC_JEECG_MARKETPLACE_LIST_URL
+    ?? process.env.NEXT_PUBLIC_JEECG_MARKETPLACE_LIST_URL;
+  return configured ?? "/jeecg-boot/automl/marketplace/algorithms/list?pageNo=1&pageSize=100";
+}
+
 function notifySessionExpired(): void {
   clearAccessToken();
   if (typeof window !== "undefined") {
@@ -941,6 +956,100 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   const contentType = response.headers.get("content-type") ?? "";
   if (contentType.includes("text/plain")) return (await response.text()) as T;
   return (await response.json()) as T;
+}
+
+async function listJeecgMarketplaceListings(): Promise<MarketplaceListing[]> {
+  const response = await fetchWithTimeout(jeecgMarketplaceListUrl(), {
+    headers: new Headers({ Accept: "application/json" }),
+  });
+  if (!response.ok) {
+    throw new CatalogApiError(`算法市场接口请求失败 (${response.status})`, {
+      status: response.status,
+      code: "request_failed",
+      detail: null,
+    });
+  }
+  const payload = await response.json() as {
+    success?: boolean;
+    message?: string;
+    result?: {
+      records?: Array<{
+        id?: string;
+        providerWorkspaceId?: string;
+        providerName?: string;
+        deploymentId?: string;
+        capabilitySpecId?: string | null;
+        capabilitySlug?: string | null;
+        capabilityVersionNumber?: number | null;
+        capabilityDisplayName?: string | null;
+        capabilityProblemDefinition?: string | null;
+        capabilityOutputContract?: string | null;
+        capabilityVerifiedScenes?: string[];
+        capabilityUnsupportedConditions?: string[];
+        endpointUrl?: string;
+        modelName?: string;
+        modelVersionNumber?: number;
+        taskType?: string;
+        title?: string;
+        summary?: string;
+        category?: string;
+        pricingUnit?: string;
+        pricePer1000Cents?: number;
+        monthlyQuotaUnits?: number;
+        status?: string;
+        publishedAt?: string | null;
+        subscriptionId?: string | null;
+        subscriptionStatus?: string | null;
+        remainingUnits?: number | null;
+        metrics?: { label: string; value: string }[];
+        classes?: string[];
+        modelArchitecture?: string;
+        inputSize?: string;
+        latencyP95?: string;
+      }>;
+    };
+  };
+  if (payload.success === false) {
+    throw new CatalogApiError(payload.message ?? "算法市场接口返回失败", {
+      status: response.status,
+      code: "request_failed",
+      detail: null,
+    });
+  }
+  return (payload.result?.records ?? []).map((item) => ({
+    id: item.id ?? "",
+    provider_workspace_id: item.providerWorkspaceId ?? "",
+    provider_name: item.providerName ?? "",
+    deployment_id: item.deploymentId ?? "",
+    capability_spec_id: item.capabilitySpecId ?? null,
+    capability_slug: item.capabilitySlug ?? null,
+    capability_version_number: item.capabilityVersionNumber ?? null,
+    capability_display_name: item.capabilityDisplayName ?? null,
+    capability_problem_definition: item.capabilityProblemDefinition ?? null,
+    capability_output_contract: item.capabilityOutputContract ?? null,
+    capability_verified_scenes: item.capabilityVerifiedScenes ?? [],
+    capability_unsupported_conditions: item.capabilityUnsupportedConditions ?? [],
+    endpoint_url: item.endpointUrl ?? "",
+    model_name: item.modelName ?? "",
+    model_version_number: item.modelVersionNumber ?? 1,
+    task_type: item.taskType ?? "object-detection",
+    title: item.title ?? "",
+    summary: item.summary ?? "",
+    category: item.category ?? "",
+    pricing_unit: item.pricingUnit ?? "request",
+    price_per_1000_cents: item.pricePer1000Cents ?? 0,
+    monthly_quota_units: item.monthlyQuotaUnits ?? 0,
+    status: item.status ?? "published",
+    published_at: item.publishedAt ?? null,
+    subscription_id: item.subscriptionId ?? null,
+    subscription_status: item.subscriptionStatus ?? null,
+    remaining_units: item.remainingUnits ?? null,
+    metrics: item.metrics ?? [],
+    classes: item.classes ?? [],
+    model_architecture: item.modelArchitecture ?? item.modelName,
+    input_size: item.inputSize ?? "按接口说明",
+    latency_p95: item.latencyP95 ?? "待供应商公布",
+  }));
 }
 
 async function requestBlob(path: string, options: RequestOptions = {}): Promise<Blob> {
@@ -1627,7 +1736,7 @@ export const catalogApi = {
   listMarketplaceListings: (workspaceId: string) =>
     request<MarketplaceListing[]>("/api/v1/marketplace/listings", { workspaceId }),
   listPublicMarketplaceListings: () =>
-    request<MarketplaceListing[]>("/api/v1/marketplace/listings/public"),
+    listJeecgMarketplaceListings(),
   listMarketplaceSubmissions: (workspaceId: string) =>
     request<MarketplaceListingSubmission[]>("/api/v1/marketplace/submissions", {
       workspaceId,

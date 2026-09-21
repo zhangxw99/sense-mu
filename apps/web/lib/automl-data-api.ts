@@ -1,5 +1,6 @@
 const AUTOML_API_TIMEOUT_MS = 30_000;
 const AUTOML_UPLOAD_TIMEOUT_MS = 120_000;
+const AUTOML_MD5_SLICE_SIZE = 2 * 1024 * 1024;
 
 let storedToken: string | null = null;
 
@@ -12,6 +13,8 @@ export type AutomlApiEnvelope<T> = {
   message?: string;
   data: T;
 };
+
+export type AutomlId = number | string;
 
 export class AutomlDataApiError extends Error {
   readonly status: number;
@@ -26,16 +29,16 @@ export class AutomlDataApiError extends Error {
 }
 
 export type AutomlUploadResult = {
-  fileId: number;
+  fileId: AutomlId;
   fileMd5: string;
   originName: string;
   objectKey: string;
-  size: number;
+  size: AutomlId;
 };
 
 export type AutomlChunkInitResult = {
   uploaded: boolean;
-  fileId: number | null;
+  fileId: AutomlId | null;
   uploadId: string | null;
   uploadedChunks: number[];
 };
@@ -56,7 +59,7 @@ export type AutomlUploadStatus = {
 };
 
 export type AutomlDataset = {
-  id: number;
+  id: AutomlId;
   datasetCode: string;
   name: string;
   taskType: string;
@@ -70,13 +73,13 @@ export type AutomlDataset = {
 };
 
 export type AutomlDatasetCreated = AutomlDataset & {
-  initialDatasetVersionId: number;
+  initialDatasetVersionId: AutomlId;
 };
 
 export type AutomlMaterialSample = {
-  id: number;
-  datasetVersionId: number;
-  dataFileId: number;
+  id: AutomlId;
+  datasetVersionId: AutomlId;
+  dataFileId: AutomlId;
   sampleObjectKey: string;
   annotation: { objectKey: string } | null;
   splitType: string;
@@ -87,12 +90,12 @@ export type AutomlMaterialSample = {
 };
 
 export type AutomlMaterial = {
-  id: number;
+  id: AutomlId;
   fileMd5: string;
   originName: string;
   objectKey: string;
   bucket: string;
-  size: number;
+  size: AutomlId;
   contentType: string | null;
   fileRole: string | null;
   createTime: string;
@@ -100,13 +103,13 @@ export type AutomlMaterial = {
 };
 
 export type AutomlDatasetModel = {
-  modelId: number;
+  modelId: AutomlId;
   modelCode: string;
   modelName: string;
-  modelVersionId: number;
+  modelVersionId: AutomlId;
   modelVersion: string;
   trainingTask: {
-    id: number;
+    id: AutomlId;
     taskCode: string;
     name: string;
     statusCd: string;
@@ -115,11 +118,11 @@ export type AutomlDatasetModel = {
 };
 
 export type AutomlVersionDetail = {
-  datasetId: number;
+  datasetId: AutomlId;
   datasetName: string;
-  totalImageCount: number;
+  totalImageCount: AutomlId;
   versions: {
-    id: number;
+    id: AutomlId;
     version: string;
     parentVersionId: number | null;
     statusCd: string;
@@ -128,7 +131,7 @@ export type AutomlVersionDetail = {
     releasedAt: string | null;
     createTime: string;
     classSampleStats: {
-      classId: number;
+      classId: AutomlId;
       classCode: string;
       className: string;
       classIndex: number;
@@ -146,9 +149,9 @@ export type AutomlAnnotationTaskSummary = {
 };
 
 export type AutomlAnnotationTask = {
-  id: number;
-  datasetId: number;
-  datasetVersionId: number;
+  id: AutomlId;
+  datasetId: AutomlId;
+  datasetVersionId: AutomlId;
   name: string;
   taskType: string;
   method: string;
@@ -262,8 +265,83 @@ export async function getAutomlUploadStatus(uploadId: string): Promise<AutomlUpl
   return fetchAutoml<AutomlUploadStatus>(`/files/${encodeURIComponent(uploadId)}`);
 }
 
+export async function computeFileMd5(file: File): Promise<string> {
+  const { default: SparkMD5 } = await import("spark-md5");
+  const spark = new SparkMD5.ArrayBuffer();
+  for (let offset = 0; offset < file.size; offset += AUTOML_MD5_SLICE_SIZE) {
+    const slice = file.slice(offset, Math.min(offset + AUTOML_MD5_SLICE_SIZE, file.size));
+    spark.append(await slice.arrayBuffer());
+  }
+  const digest = spark.end();
+  if (!digest || digest.length !== 32) {
+    throw new AutomlDataApiError("文件 MD5 计算失败，请重试", { status: 0, code: "md5_failed" });
+  }
+  return digest;
+}
+
+export type AutomlChunkedUploadProgress = {
+  totalChunks: number;
+  uploadedChunks: number;
+};
+
+export async function uploadAutomlFileChunked(
+  file: File,
+  options: {
+    chunkSize?: number;
+    sceneCode?: string;
+    onProgress?: (progress: AutomlChunkedUploadProgress) => void;
+  } = {},
+): Promise<{ result: AutomlUploadResult; deduplicated: boolean }> {
+  if (file.size <= 0) {
+    throw new AutomlDataApiError("不能上传空文件", { status: 0, code: "invalid_file" });
+  }
+  const chunkSize = options.chunkSize ?? 5 * 1024 * 1024;
+  if (chunkSize < 1024 * 1024 || chunkSize > 20 * 1024 * 1024) {
+    throw new AutomlDataApiError("分片大小必须在 1MB 到 20MB 之间", { status: 0, code: "invalid_chunk_size" });
+  }
+  const fileMd5 = await computeFileMd5(file);
+  const init = await initAutomlChunkedUpload({
+    fileName: file.name,
+    fileSize: file.size,
+    fileMd5,
+    chunkSize,
+    sceneCode: options.sceneCode,
+  });
+  if (init.uploaded && init.fileId != null) {
+    return {
+      result: {
+        fileId: init.fileId,
+        fileMd5,
+        originName: file.name,
+        objectKey: "",
+        size: file.size,
+      },
+      deduplicated: true,
+    };
+  }
+  if (!init.uploadId) {
+    throw new AutomlDataApiError("分片上传初始化失败：服务端未返回会话 ID", {
+      status: 0,
+      code: "init_failed",
+    });
+  }
+  const totalChunks = Math.ceil(file.size / chunkSize);
+  let uploadedCount = init.uploadedChunks.length;
+  options.onProgress?.({ totalChunks, uploadedChunks: uploadedCount });
+  for (let chunkNo = 1; chunkNo <= totalChunks; chunkNo += 1) {
+    if (init.uploadedChunks.includes(chunkNo)) continue;
+    const start = (chunkNo - 1) * chunkSize;
+    const chunk = file.slice(start, Math.min(start + chunkSize, file.size));
+    await uploadAutomlChunk(init.uploadId, chunkNo, chunk);
+    uploadedCount += 1;
+    options.onProgress?.({ totalChunks, uploadedChunks: uploadedCount });
+  }
+  const result = await completeAutomlChunkedUpload(init.uploadId);
+  return { result, deduplicated: false };
+}
+
 export async function createAutomlDatasetFromFiles(input: {
-  dataFileIds: number[];
+  dataFileIds: AutomlId[];
   name: string;
   description?: string;
   taskType: string;
@@ -285,16 +363,16 @@ export async function getAutomlDatasetVersionDetails(datasetId: number | string)
 
 export async function listAutomlAnnotationTasks(
   datasetId: number | string,
-  datasetVersionId: number,
+  datasetVersionId: AutomlId,
 ): Promise<AutomlAnnotationTaskSummary[]> {
   return fetchAutoml<AutomlAnnotationTaskSummary[]>(
-    `/datasets/${encodeURIComponent(String(datasetId))}/versions/${datasetVersionId}/annotation-tasks`,
+    `/datasets/${encodeURIComponent(String(datasetId))}/versions/${encodeURIComponent(String(datasetVersionId))}/annotation-tasks`,
   );
 }
 
 export async function createAutomlStandardAnnotationTask(input: {
   datasetId: number | string;
-  datasetVersionId: number;
+  datasetVersionId: AutomlId;
   name: string;
   method?: "MANUAL" | "MODEL_ASSISTED";
 }): Promise<AutomlAnnotationTask> {

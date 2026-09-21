@@ -17534,3 +17534,44 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   font-weight: 600;
   color: var(--sensemu-text-muted, #64748b);
 }
+
+.automl-subpanel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-top: 1px dashed var(--sensemu-border, #e2e8f0);
+  padding-top: 12px;
+}
+
+.automl-subpanel h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.automl-field-inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.automl-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.automl-progress-bar {
+  flex: 1;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--sensemu-border, #e2e8f0);
+  overflow: hidden;
+}
+
+.automl-progress-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--sensemu-accent, #2563eb);
+  transition: width 0.2s ease;
+}

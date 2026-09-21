@@ -11,18 +11,23 @@ import {
 } from "lucide-react";
 import {
   AutomlAnnotationTaskSummary,
+  AutomlChunkedUploadProgress,
   AutomlDatasetCreated,
   AutomlDatasetModel,
+  AutomlId,
   AutomlMaterial,
   AutomlUploadResult,
+  AutomlUploadStatus,
   AutomlVersionDetail,
   createAutomlDatasetFromFiles,
   createAutomlStandardAnnotationTask,
   getAutomlDatasetVersionDetails,
+  getAutomlUploadStatus,
   listAutomlAnnotationTasks,
   listAutomlDatasetMaterials,
   listAutomlDatasetModels,
   uploadAutomlFiles,
+  uploadAutomlFileChunked,
 } from "../../../lib/automl-data-api";
 
 const TASK_TYPES = [
@@ -33,9 +38,10 @@ const TASK_TYPES = [
 
 type InspectorTab = "materials" | "versions" | "models";
 
-function formatBytes(size: number): string {
-  if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`;
-  if (size >= 1024) return `${(size / 1024).toFixed(1)} KB`;
+function formatBytes(size: AutomlId): string {
+  const bytes = Number(size);
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${size} B`;
 }
 
@@ -44,7 +50,7 @@ export function AutomlWorkbench() {
   const [notice, setNotice] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadedFiles, setUploadedFiles] = useState<AutomlUploadResult[]>([]);
-  const [selectedFileIds, setSelectedFileIds] = useState<number[]>([]);
+  const [selectedFileIds, setSelectedFileIds] = useState<AutomlId[]>([]);
   const [datasetName, setDatasetName] = useState("");
   const [datasetTaskType, setDatasetTaskType] = useState("OBJECT_DETECTION");
   const [datasetDescription, setDatasetDescription] = useState("");
@@ -62,6 +68,13 @@ export function AutomlWorkbench() {
   const [taskName, setTaskName] = useState("");
   const [taskMethod, setTaskMethod] = useState<"MANUAL" | "MODEL_ASSISTED">("MANUAL");
   const [creatingTask, setCreatingTask] = useState(false);
+  const [chunkedUploading, setChunkedUploading] = useState(false);
+  const [chunkProgress, setChunkProgress] = useState<AutomlChunkedUploadProgress | null>(null);
+  const [chunkedDeduplicated, setChunkedDeduplicated] = useState<boolean | null>(null);
+  const [chunkSizeMb, setChunkSizeMb] = useState(5);
+  const [statusUploadId, setStatusUploadId] = useState("");
+  const [uploadStatus, setUploadStatus] = useState<AutomlUploadStatus | null>(null);
+  const [statusLoading, setStatusLoading] = useState(false);
 
   const inspectorId = useMemo(() => inspectorDatasetId.trim(), [inspectorDatasetId]);
 
@@ -94,11 +107,54 @@ export function AutomlWorkbench() {
     });
   }, [run]);
 
-  const toggleFile = useCallback((fileId: number) => {
+  const toggleFile = useCallback((fileId: AutomlId) => {
     setSelectedFileIds((current) => (
       current.includes(fileId) ? current.filter((id) => id !== fileId) : [...current, fileId]
     ));
   }, []);
+
+  const handleChunkedUpload = useCallback((file: File | null) => {
+    if (!file) return;
+    void run(async () => {
+      setChunkedUploading(true);
+      setChunkedDeduplicated(null);
+      setChunkProgress(null);
+      try {
+        const { result, deduplicated } = await uploadAutomlFileChunked(file, {
+          chunkSize: chunkSizeMb * 1024 * 1024,
+          onProgress: setChunkProgress,
+        });
+        setUploadedFiles((current) => (
+          current.some((item) => item.fileId === result.fileId)
+            ? current
+            : [...current, { ...result, originName: result.originName || file.name }]
+        ));
+        setSelectedFileIds((current) => [...new Set([...current, result.fileId])]);
+        setChunkedDeduplicated(deduplicated);
+        return deduplicated
+          ? `秒传命中：${file.name}（文件 #${result.fileId}）`
+          : `分片上传完成：${file.name}（文件 #${result.fileId}）`;
+      } finally {
+        setChunkedUploading(false);
+      }
+    });
+  }, [chunkSizeMb, run]);
+
+  const handleStatusQuery = useCallback(() => {
+    const uploadId = statusUploadId.trim();
+    if (!uploadId) {
+      setError("请填写分片上传会话 ID");
+      return;
+    }
+    void run(async () => {
+      setStatusLoading(true);
+      try {
+        setUploadStatus(await getAutomlUploadStatus(uploadId));
+      } finally {
+        setStatusLoading(false);
+      }
+    });
+  }, [run, statusUploadId]);
 
   const handleCreateDataset = useCallback(() => {
     if (!datasetName.trim()) {
@@ -150,7 +206,7 @@ export function AutomlWorkbench() {
     void run(async () => {
       setTasksLoading(true);
       try {
-        setTasks(await listAutomlAnnotationTasks(datasetId, Number(versionId)));
+        setTasks(await listAutomlAnnotationTasks(datasetId, versionId));
       } finally {
         setTasksLoading(false);
       }
@@ -175,7 +231,7 @@ export function AutomlWorkbench() {
       try {
         const task = await createAutomlStandardAnnotationTask({
           datasetId: inspectorId,
-          datasetVersionId: Number(versionIdInput.trim()),
+          datasetVersionId: versionIdInput.trim(),
           name: taskName.trim(),
           method: taskMethod,
         });
@@ -244,6 +300,66 @@ export function AutomlWorkbench() {
           ) : (
             <p className="automl-panel-hint">尚未上传文件。</p>
           )}
+          <div className="automl-subpanel">
+            <h3>大文件分片上传</h3>
+            <div className="automl-actions">
+              <label className="secondary-button automl-upload-button">
+                <input
+                  type="file"
+                  accept="image/*,video/*"
+                  style={{ display: "none" }}
+                  onChange={(event) => {
+                    const file = event.target.files?.[0] ?? null;
+                    handleChunkedUpload(file);
+                    event.target.value = "";
+                  }}
+                />
+                {chunkedUploading ? <LoaderCircle size={16} className="spinner" /> : <Upload size={16} />}
+                选择大文件（大于 20MB 建议）
+              </label>
+              <label className="automl-field automl-field-inline">
+                <span>分片大小</span>
+                <select value={chunkSizeMb} disabled={chunkedUploading} onChange={(event) => setChunkSizeMb(Number(event.target.value))}>
+                  <option value={1}>1 MB</option>
+                  <option value={5}>5 MB</option>
+                  <option value={10}>10 MB</option>
+                  <option value={20}>20 MB</option>
+                </select>
+              </label>
+            </div>
+            {chunkProgress ? (
+              <div className="automl-progress">
+                <div className="automl-progress-bar">
+                  <i style={{ width: `${Math.round((chunkProgress.uploadedChunks / chunkProgress.totalChunks) * 100)}%` }} />
+                </div>
+                <span className="automl-file-meta">
+                  {chunkedDeduplicated ? "秒传完成" : `分片 ${chunkProgress.uploadedChunks}/${chunkProgress.totalChunks}`}
+                </span>
+              </div>
+            ) : null}
+          </div>
+          <div className="automl-subpanel">
+            <h3>上传状态查询（断点续传）</h3>
+            <div className="automl-actions">
+              <input
+                className="automl-inline-input"
+                value={statusUploadId}
+                onChange={(event) => setStatusUploadId(event.target.value)}
+                placeholder="分片上传会话 ID（uploadId）"
+              />
+              <button className="secondary-button" type="button" disabled={statusLoading || !statusUploadId.trim()} onClick={handleStatusQuery}>
+                {statusLoading ? <LoaderCircle size={16} className="spinner" /> : <RefreshCw size={16} />}
+                查询状态
+              </button>
+            </div>
+            {uploadStatus ? (
+              <p className="automl-panel-hint">
+                {uploadStatus.fileName} · {uploadStatus.status} ·{" "}
+                已传 {uploadStatus.uploadedChunks.length}/{uploadStatus.totalChunks} 片 ·{" "}
+                {formatBytes(uploadStatus.receivedBytes)}/{formatBytes(uploadStatus.fileSize)}
+              </p>
+            ) : null}
+          </div>
         </article>
 
         <article className="panel automl-panel">

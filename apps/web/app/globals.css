@@ -17412,8 +17412,125 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   .algorithm-demo-control-heading,
   .algorithm-demo-source-grid,
   .algorithm-demo-run,
-  .algorithm-demo-message,
-  .algorithm-demo-disclaimer {
-    grid-column: 1;
-  }
+.algorithm-demo-message,
+.algorithm-demo-disclaimer {
+  grid-column: 1;
+}
+}
+
+.automl-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.automl-panel-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.automl-panel-header h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.automl-panel-hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--sensemu-text-muted, #64748b);
+}
+
+.automl-upload-button {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.automl-file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.automl-file-list label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.automl-file-name {
+  font-weight: 500;
+}
+
+.automl-file-meta {
+  color: var(--sensemu-text-muted, #64748b);
+}
+
+.automl-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.automl-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.automl-field-wide {
+  grid-column: 1 / -1;
+}
+
+.automl-field input,
+.automl-field select,
+.automl-inline-input {
+  border: 1px solid var(--sensemu-border, #cbd5e1);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  background: transparent;
+  color: inherit;
+}
+
+.automl-inline-input {
+  flex: 1;
+  min-width: 200px;
+}
+
+.automl-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.automl-actions .automl-panel-hint {
+  margin-right: auto;
+}
+
+.automl-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.automl-table th,
+.automl-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--sensemu-border, #e2e8f0);
+}
+
+.automl-table th {
+  font-weight: 600;
+  color: var(--sensemu-text-muted, #64748b);
 }

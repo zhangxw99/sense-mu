@@ -165,6 +165,33 @@ export type AutomlAnnotationTask = {
   createTime: string;
 };
 
+export type AutomlAlgorithmSearchItem = {
+  id: AutomlId;
+  model_name: string;
+  model_type: string | null;
+  model_scene: string | null;
+  model_description: string | null;
+};
+
+export type AutomlAlgorithmSearchResult = {
+  current: number;
+  limit: number;
+  totalPage: number;
+  total: AutomlId;
+  rows: AutomlAlgorithmSearchItem[];
+};
+
+export async function searchAutomlAlgorithms(
+  params: { page?: number; limit?: number; name?: string } = {},
+): Promise<AutomlAlgorithmSearchResult> {
+  const query = new URLSearchParams({
+    page: String(params.page ?? 1),
+    limit: String(params.limit ?? 10),
+  });
+  if (params.name) query.set("name", params.name);
+  return fetchAutoml<AutomlAlgorithmSearchResult>(`/algorithms/search?${query.toString()}`);
+}
+
 function automlApiBaseUrl(): string {
   if (typeof window !== "undefined" && !window.location.hostname.startsWith("localhost")) {
     throw new AutomlDataApiError("AutoML 接口尚未配置服务地址", { status: 0, code: "not_configured" });

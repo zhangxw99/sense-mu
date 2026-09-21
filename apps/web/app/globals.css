@@ -17424,6 +17424,25 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   gap: 14px;
 }
 
+.automl-backend-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #b91c1c;
+}
+
+.automl-backend-status i {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.automl-backend-status.is-online {
+  color: #15803d;
+}
+
 .automl-panel-header {
   display: flex;
   align-items: flex-start;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Database,
   ListChecks,
@@ -28,6 +28,7 @@ import {
   listAutomlDatasetModels,
   uploadAutomlFiles,
   uploadAutomlFileChunked,
+  searchAutomlAlgorithms,
 } from "../../../lib/automl-data-api";
 
 const TASK_TYPES = [
@@ -37,6 +38,13 @@ const TASK_TYPES = [
 ];
 
 type InspectorTab = "materials" | "versions" | "models";
+
+const AUTOML_CONTEXT_STORAGE_KEY = "sensemu-automl-context";
+
+type StoredAutomlContext = {
+  datasetId: string;
+  versionId: string;
+};
 
 function formatBytes(size: AutomlId): string {
   const bytes = Number(size);
@@ -75,8 +83,60 @@ export function AutomlWorkbench() {
   const [statusUploadId, setStatusUploadId] = useState("");
   const [uploadStatus, setUploadStatus] = useState<AutomlUploadStatus | null>(null);
   const [statusLoading, setStatusLoading] = useState(false);
+  const [backendStatus, setBackendStatus] = useState<"checking" | "online" | "offline">("checking");
+  const [algorithmTotal, setAlgorithmTotal] = useState<AutomlId | null>(null);
 
   const inspectorId = useMemo(() => inspectorDatasetId.trim(), [inspectorDatasetId]);
+
+  const persistContext = useCallback((datasetId: string, versionId: string) => {
+    try {
+      window.localStorage.setItem(
+        AUTOML_CONTEXT_STORAGE_KEY,
+        JSON.stringify({ datasetId, versionId } satisfies StoredAutomlContext),
+      );
+    } catch {
+      // 存储不可用时静默跳过，仅影响刷新后的自动恢复。
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function bootstrap() {
+      try {
+        const result = await searchAutomlAlgorithms({ limit: 1 });
+        if (cancelled) return;
+        setBackendStatus("online");
+        setAlgorithmTotal(result.total);
+      } catch {
+        if (!cancelled) setBackendStatus("offline");
+      }
+      let stored: StoredAutomlContext | null = null;
+      try {
+        stored = JSON.parse(window.localStorage.getItem(AUTOML_CONTEXT_STORAGE_KEY) ?? "null") as StoredAutomlContext | null;
+      } catch {
+        stored = null;
+      }
+      if (cancelled || !stored?.datasetId) return;
+      setInspectorDatasetId(stored.datasetId);
+      if (stored.versionId) setVersionIdInput(stored.versionId);
+      try {
+        setInspecting(true);
+        setMaterials(await listAutomlDatasetMaterials(stored.datasetId));
+        setVersionDetail(await getAutomlDatasetVersionDetails(stored.datasetId));
+        if (stored.versionId) {
+          setTasks(await listAutomlAnnotationTasks(stored.datasetId, stored.versionId));
+        }
+      } catch {
+        // 上次的 ID 已失效时静默忽略，保留输入框供手动修改。
+      } finally {
+        if (!cancelled) setInspecting(false);
+      }
+    }
+    void bootstrap();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const run = useCallback(async (action: () => Promise<string | void>) => {
     setError(null);
@@ -181,12 +241,13 @@ export function AutomlWorkbench() {
         setVersionDetail(null);
         setModels(null);
         setTasks(null);
+        persistContext(String(dataset.id), String(dataset.initialDatasetVersionId));
         return `数据集创建成功：${dataset.datasetCode}（v1 版本 ${dataset.initialDatasetVersionId}）`;
       } finally {
         setCreatingDataset(false);
       }
     });
-  }, [datasetDescription, datasetName, datasetTaskType, run, selectedFileIds]);
+  }, [datasetDescription, datasetName, datasetTaskType, persistContext, run, selectedFileIds]);
 
   const loadInspectorTab = useCallback((tab: InspectorTab, datasetId: string) => {
     void run(async () => {
@@ -196,11 +257,12 @@ export function AutomlWorkbench() {
         if (tab === "materials") setMaterials(await listAutomlDatasetMaterials(datasetId));
         if (tab === "versions") setVersionDetail(await getAutomlDatasetVersionDetails(datasetId));
         if (tab === "models") setModels(await listAutomlDatasetModels(datasetId));
+        persistContext(datasetId, versionIdInput.trim());
       } finally {
         setInspecting(false);
       }
     });
-  }, [run]);
+  }, [persistContext, run, versionIdInput]);
 
   const loadTasks = useCallback((datasetId: string, versionId: string) => {
     void run(async () => {
@@ -246,6 +308,14 @@ export function AutomlWorkbench() {
   return (
     <section className="data-workbench" id="automl-workbench">
       <div className="data-content">
+        <div className={`automl-backend-status${backendStatus === "online" ? " is-online" : ""}`} role="status">
+          <i aria-hidden="true" />
+          {backendStatus === "checking"
+            ? "正在连接 sz-boot 后端…"
+            : backendStatus === "online"
+              ? `sz-boot 后端已连接 · 算法库 ${algorithmTotal} 个 · 接口前缀 /sz-api/automl`
+              : "无法连接 sz-boot 后端（127.0.0.1:9992），请确认服务已启动"}
+        </div>
         {error ? (
           <div className="workbench-message error-message" role="alert">
             <span>{error}</span>

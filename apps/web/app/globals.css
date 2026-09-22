@@ -17567,6 +17567,17 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   font-size: 14px;
 }
 
+.automl-annotation-json {
+  width: 100%;
+  border: 1px solid var(--sensemu-border, #cbd5e1);
+  border-radius: 8px;
+  padding: 10px;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: transparent;
+  color: inherit;
+  resize: vertical;
+}
+
 .automl-field-inline {
   flex-direction: row;
   align-items: center;

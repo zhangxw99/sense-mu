@@ -1,6 +1,7 @@
 const AUTOML_API_TIMEOUT_MS = 30_000;
 const AUTOML_UPLOAD_TIMEOUT_MS = 120_000;
 const AUTOML_MD5_SLICE_SIZE = 2 * 1024 * 1024;
+const AUTOML_CHUNK_RATE_LIMIT_DELAY_MS = 1_200;
 
 let storedToken: string | null = null;
 
@@ -70,10 +71,48 @@ export type AutomlDataset = {
   description: string | null;
   statusCd: string;
   createTime: string;
+  latestVersionId?: AutomlId | null;
+  sampleCount?: number;
+  imageCount?: number;
+  annotatedSampleCount?: number;
 };
 
 export type AutomlDatasetCreated = AutomlDataset & {
   initialDatasetVersionId: AutomlId;
+};
+
+export type AutomlDatasetItem = {
+  itemId: AutomlId;
+  dataFileId: AutomlId | null;
+  originName: string | null;
+  sampleObjectKey: string;
+  annotationObjectKey: string | null;
+  splitType: string;
+  mediaType: string;
+  width: number | null;
+  height: number | null;
+  sizeBytes: AutomlId | null;
+  statusCd: string;
+  annotatedItemCount: number;
+};
+
+export type AutomlDatasetClass = {
+  id: AutomlId;
+  datasetId: AutomlId;
+  classCode: string;
+  className: string;
+  classIndex: number;
+  color: string | null;
+  parentId: AutomlId | null;
+  sortNo: number;
+  attributesJson: Record<string, unknown> | null;
+  statusCd: string;
+  remark: string | null;
+};
+
+export type AutomlSplitCount = {
+  splitType: string;
+  itemCount: AutomlId;
 };
 
 export type AutomlMaterialSample = {
@@ -165,6 +204,19 @@ export type AutomlAnnotationTask = {
   createTime: string;
 };
 
+export type AutomlAnnotation = {
+  id: AutomlId;
+  datasetId: AutomlId;
+  datasetVersionId: AutomlId;
+  datasetItemId: AutomlId;
+  annotationTaskId: AutomlId;
+  labelName: string;
+  annotationJson: Record<string, unknown>;
+  confidence: number | null;
+  sourceCd: string;
+  statusCd: string;
+};
+
 export type AutomlAlgorithmSearchItem = {
   id: AutomlId;
   model_name: string;
@@ -181,15 +233,43 @@ export type AutomlAlgorithmSearchResult = {
   rows: AutomlAlgorithmSearchItem[];
 };
 
+export type AutomlAlgorithmDetail = {
+  model_info: Record<string, unknown> | null;
+  model_metric: Record<string, unknown> | null;
+  eval_info: Record<string, unknown> | null;
+  input_schema: Record<string, unknown> | null;
+  result_schema: Record<string, unknown> | null;
+  usage_scene: { suggest?: string; unsuggest?: string } | null;
+};
+
+export type AutomlPage<T> = {
+  current: number;
+  limit: number;
+  totalPage: number;
+  total: AutomlId;
+  rows: T[];
+};
+
+export type AutomlFileUrl = {
+  objectKey: string;
+  url: string;
+  expiresAt: string;
+};
+
 export async function searchAutomlAlgorithms(
-  params: { page?: number; limit?: number; name?: string } = {},
+  params: { page?: number; limit?: number; name?: string; scene?: string } = {},
 ): Promise<AutomlAlgorithmSearchResult> {
   const query = new URLSearchParams({
     page: String(params.page ?? 1),
     limit: String(params.limit ?? 10),
   });
   if (params.name) query.set("name", params.name);
+  if (params.scene) query.set("scene", params.scene);
   return fetchAutoml<AutomlAlgorithmSearchResult>(`/algorithms/search?${query.toString()}`);
+}
+
+export async function getAutomlAlgorithmDetail(id: AutomlId): Promise<AutomlAlgorithmDetail> {
+  return fetchAutoml<AutomlAlgorithmDetail>(`/algorithms/${encodeURIComponent(String(id))}`);
 }
 
 function automlApiBaseUrl(): string {
@@ -292,6 +372,10 @@ export async function getAutomlUploadStatus(uploadId: string): Promise<AutomlUpl
   return fetchAutoml<AutomlUploadStatus>(`/files/${encodeURIComponent(uploadId)}`);
 }
 
+export async function getAutomlFileUrls(objectKeys: string[], ttlSeconds = 3600): Promise<AutomlFileUrl[]> {
+  return fetchAutoml<AutomlFileUrl[]>("/files/batch-urls", jsonInit("POST", { objectKeys, ttlSeconds }));
+}
+
 export async function computeFileMd5(file: File): Promise<string> {
   const { default: SparkMD5 } = await import("spark-md5");
   const spark = new SparkMD5.ArrayBuffer();
@@ -323,8 +407,8 @@ export async function uploadAutomlFileChunked(
     throw new AutomlDataApiError("不能上传空文件", { status: 0, code: "invalid_file" });
   }
   const chunkSize = options.chunkSize ?? 5 * 1024 * 1024;
-  if (chunkSize < 1024 * 1024 || chunkSize > 20 * 1024 * 1024) {
-    throw new AutomlDataApiError("分片大小必须在 1MB 到 20MB 之间", { status: 0, code: "invalid_chunk_size" });
+  if (chunkSize < 5 * 1024 * 1024 || chunkSize > 20 * 1024 * 1024) {
+    throw new AutomlDataApiError("分片大小必须在 5MB 到 20MB 之间", { status: 0, code: "invalid_chunk_size" });
   }
   const fileMd5 = await computeFileMd5(file);
   const init = await initAutomlChunkedUpload({
@@ -359,6 +443,7 @@ export async function uploadAutomlFileChunked(
     if (init.uploadedChunks.includes(chunkNo)) continue;
     const start = (chunkNo - 1) * chunkSize;
     const chunk = file.slice(start, Math.min(start + chunkSize, file.size));
+    await new Promise((resolve) => setTimeout(resolve, AUTOML_CHUNK_RATE_LIMIT_DELAY_MS));
     await uploadAutomlChunk(init.uploadId, chunkNo, chunk);
     uploadedCount += 1;
     options.onProgress?.({ totalChunks, uploadedChunks: uploadedCount });
@@ -376,12 +461,111 @@ export async function createAutomlDatasetFromFiles(input: {
   return fetchAutoml<AutomlDatasetCreated>("/datasets/from-files", jsonInit("POST", input));
 }
 
+export async function listAutomlDatasets(
+  params: {
+    page?: number;
+    limit?: number;
+    name?: string;
+    taskType?: string;
+    statusCd?: string;
+  } = {},
+): Promise<AutomlPage<AutomlDataset>> {
+  const query = new URLSearchParams({
+    page: String(params.page ?? 1),
+    limit: String(params.limit ?? 10),
+  });
+  for (const key of ["name", "taskType", "statusCd"] as const) {
+    const value = params[key]?.trim();
+    if (value) query.set(key, value);
+  }
+  return fetchAutoml<AutomlPage<AutomlDataset>>(`/datasets?${query.toString()}`);
+}
+
+export async function listAutomlDatasetItems(
+  datasetId: number | string,
+  datasetVersionId: AutomlId,
+  params: {
+    page?: number;
+    limit?: number;
+    splitType?: string;
+    statusCd?: string;
+    annotated?: boolean;
+  } = {},
+): Promise<AutomlPage<AutomlDatasetItem>> {
+  const query = new URLSearchParams({
+    page: String(params.page ?? 1),
+    limit: String(params.limit ?? 10),
+  });
+  if (params.splitType?.trim()) query.set("splitType", params.splitType.trim());
+  if (params.statusCd?.trim()) query.set("statusCd", params.statusCd.trim());
+  if (params.annotated != null) query.set("annotated", String(params.annotated));
+  return fetchAutoml<AutomlPage<AutomlDatasetItem>>(
+    `/datasets/${encodeURIComponent(String(datasetId))}/versions/${encodeURIComponent(String(datasetVersionId))}/items?${query.toString()}`,
+  );
+}
+
+export async function updateAutomlDatasetItemSplits(
+  datasetId: number | string,
+  datasetVersionId: AutomlId,
+  items: { itemId: AutomlId; splitType: "train" | "val" | "test" }[],
+): Promise<AutomlSplitCount[]> {
+  return fetchAutoml<AutomlSplitCount[]>(
+    `/datasets/${encodeURIComponent(String(datasetId))}/versions/${encodeURIComponent(String(datasetVersionId))}/items/splits`,
+    jsonInit("PUT", { items }),
+  );
+}
+
 export async function listAutomlDatasetMaterials(datasetId: number | string): Promise<AutomlMaterial[]> {
   return fetchAutoml<AutomlMaterial[]>(`/datasets/${encodeURIComponent(String(datasetId))}/materials`);
 }
 
 export async function listAutomlDatasetModels(datasetId: number | string): Promise<AutomlDatasetModel[]> {
   return fetchAutoml<AutomlDatasetModel[]>(`/datasets/${encodeURIComponent(String(datasetId))}/models`);
+}
+
+export async function listAutomlDatasetClasses(datasetId: number | string): Promise<AutomlDatasetClass[]> {
+  return fetchAutoml<AutomlDatasetClass[]>(`/datasets/${encodeURIComponent(String(datasetId))}/classes`);
+}
+
+export async function createAutomlDatasetClass(
+  datasetId: number | string,
+  input: {
+    classCode: string;
+    className: string;
+    color?: string;
+    sortNo?: number;
+    statusCd?: "ENABLED" | "DISABLED";
+    remark?: string;
+  },
+): Promise<void> {
+  return fetchAutoml<void>(`/datasets/${encodeURIComponent(String(datasetId))}/classes`, jsonInit("POST", input));
+}
+
+export async function updateAutomlDatasetClass(
+  datasetId: number | string,
+  classId: AutomlId,
+  input: {
+    datasetId: AutomlId;
+    classCode: string;
+    classIndex: number;
+    className: string;
+    color?: string;
+    sortNo?: number;
+    statusCd?: "ENABLED" | "DISABLED";
+    remark?: string;
+  },
+): Promise<void> {
+  return fetchAutoml<void>(
+    `/datasets/${encodeURIComponent(String(datasetId))}/classes/${encodeURIComponent(String(classId))}`,
+    jsonInit("PUT", { ...input, id: classId }),
+  );
+}
+
+export async function deleteAutomlDatasetClass(datasetId: number | string, classId: AutomlId): Promise<void> {
+  return fetchAutoml<void>(
+    `/datasets/${encodeURIComponent(String(datasetId))}/classes/${encodeURIComponent(String(classId))}`,
+    { method: "DELETE" },
+  );
 }
 
 export async function getAutomlDatasetVersionDetails(datasetId: number | string): Promise<AutomlVersionDetail> {
@@ -407,5 +591,37 @@ export async function createAutomlStandardAnnotationTask(input: {
   return fetchAutoml<AutomlAnnotationTask>(
     `/datasets/${encodeURIComponent(String(datasetId))}/versions/${datasetVersionId}/annotation-tasks/standard`,
     jsonInit("POST", body),
+  );
+}
+
+export async function listAutomlAnnotations(
+  datasetId: number | string,
+  datasetVersionId: AutomlId,
+  itemId: AutomlId,
+  annotationTaskId?: AutomlId,
+): Promise<AutomlAnnotation[]> {
+  const query = annotationTaskId ? `?annotationTaskId=${encodeURIComponent(String(annotationTaskId))}` : "";
+  return fetchAutoml<AutomlAnnotation[]>(
+    `/datasets/${encodeURIComponent(String(datasetId))}/versions/${encodeURIComponent(String(datasetVersionId))}/items/${encodeURIComponent(String(itemId))}/annotations${query}`,
+  );
+}
+
+export async function saveAutomlAnnotations(
+  datasetId: number | string,
+  datasetVersionId: AutomlId,
+  itemId: AutomlId,
+  input: {
+    annotationTaskId: AutomlId;
+    annotations: {
+      labelName: string;
+      annotationJson: Record<string, unknown>;
+      confidence?: number;
+      sourceCd?: "MANUAL" | "MODEL" | "MODEL_ASSISTED" | "IMPORT";
+    }[];
+  },
+): Promise<AutomlAnnotation[]> {
+  return fetchAutoml<AutomlAnnotation[]>(
+    `/datasets/${encodeURIComponent(String(datasetId))}/versions/${encodeURIComponent(String(datasetVersionId))}/items/${encodeURIComponent(String(itemId))}/annotations`,
+    jsonInit("PUT", input),
   );
 }

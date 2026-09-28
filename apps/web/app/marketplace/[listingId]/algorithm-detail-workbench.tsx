@@ -25,16 +25,15 @@ export function AlgorithmDetailWorkbench({ listingId, previewMode }: { listingId
 
   useEffect(() => {
     void Promise.all([
-      initialListing ? Promise.resolve<null>(null) : catalogApi.listPublicMarketplaceListings(),
+      initialListing ? Promise.resolve<null>(null) : catalogApi.getPublicMarketplaceListing(listingId),
       catalogApi.listWorkspaces().catch(() => [] as Workspace[]),
     ])
-      .then(([publicListings, nextWorkspaces]) => {
+      .then(([detail, nextWorkspaces]) => {
         setWorkspaces(nextWorkspaces);
         const selected = nextWorkspaces[0]?.id ?? "";
         setWorkspaceId(selected);
-        if (!initialListing && publicListings) {
-          const realListing = publicListings.find((item) => item.id === listingId);
-          setListing(realListing ? decorateAlgorithmListing(realListing) : null);
+        if (!initialListing && detail) {
+          setListing(decorateAlgorithmListing(detail));
         }
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : "算法详情加载失败"))
@@ -123,8 +122,18 @@ export function AlgorithmDetailWorkbench({ listingId, previewMode }: { listingId
           <section className="catalog-detail-section">
             <h2>适用边界</h2>
             <div className="catalog-boundary-grid">
-              <div><h3>已验证场景</h3>{listing.capability_verified_scenes.map((item) => <p key={item}><Check size={14} />{item}</p>)}</div>
-              <div><h3>不建议直接使用</h3>{listing.capability_unsupported_conditions.map((item) => <p key={item}>{item}</p>)}</div>
+              <div>
+                <h3>建议使用</h3>
+                {listing.usage_scene?.suggest
+                  ? <p><Check size={14} />{listing.usage_scene.suggest}</p>
+                  : listing.capability_verified_scenes.map((item) => <p key={item}><Check size={14} />{item}</p>)}
+              </div>
+              <div>
+                <h3>不建议使用</h3>
+                {listing.usage_scene?.unsuggest
+                  ? <p>{listing.usage_scene.unsuggest}</p>
+                  : listing.capability_unsupported_conditions.map((item) => <p key={item}>{item}</p>)}
+              </div>
             </div>
           </section>
 

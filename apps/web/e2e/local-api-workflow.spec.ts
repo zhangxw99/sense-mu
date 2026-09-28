@@ -1,3 +1,9 @@
+/**
+ * 遗留 spec：面向旧 sense-mu Python 栈（apps/api）的「工作区→项目→数据集→标注→训练→发布」全链路。
+ * 2026-09-23 起 /studio/data 已切换 sz-boot automl（工作区/项目两级已移除、旧 /studio/data/annotate 路由已删除），
+ * 本文件流程不再对应现有页面，已被 playwright.config.ts 的 testIgnore 排除，保留待按 automl 流程重写。
+ * sz-boot automl 的接口级端到端验证见 scripts/automl-api-e2e.mjs（29 步，覆盖上传→建集→标注→快照→发布→级联删除）。
+ */
 import { expect, test, type Page } from "@playwright/test";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";

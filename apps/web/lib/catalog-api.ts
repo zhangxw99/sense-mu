@@ -715,11 +715,45 @@ export type MarketplaceListing = {
   subscription_id: string | null;
   subscription_status: string | null;
   remaining_units: number | null;
+  is_valid?: boolean;
+  is_available?: boolean;
   metrics?: { label: string; value: string }[];
   classes?: string[];
   model_architecture?: string;
   input_size?: string;
   latency_p95?: string;
+  usage_scene?: AlgorithmUsageScene;
+};
+
+export type AlgorithmUsageScene = {
+  suggest: string;
+  unsuggest: string;
+};
+
+type AutoMLAlgorithmSearchItem = {
+  id?: string | number;
+  detect_image_id?: string | null;
+  model_name?: string;
+  model_description?: string;
+  model_type?: string;
+  model_scene?: string;
+  model_args?: Record<string, unknown>;
+  model_arch?: string;
+  is_valid?: boolean;
+  price?: number | null;
+  is_available?: boolean;
+  dataset_id?: string | number | null;
+  perspective?: string | null;
+  remarks?: string | null;
+};
+
+type AutoMLAlgorithmDetail = {
+  model_info?: Record<string, unknown>;
+  model_metric?: Record<string, unknown>;
+  eval_info?: Record<string, unknown>;
+  input_schema?: Record<string, unknown>;
+  result_schema?: Record<string, unknown>;
+  usage_scene?: AlgorithmUsageScene;
 };
 
 export type MarketplaceListingSubmission = MarketplaceListing & {
@@ -887,14 +921,22 @@ function apiBaseUrl(): string {
   throw new Error("SenseMu API 尚未配置");
 }
 
-function jeecgMarketplaceListUrl(): string {
+function automlApiBaseUrl(): string {
   const viteEnv = (import.meta as unknown as {
     env?: Record<string, string | undefined>;
   }).env;
-  const configured = viteEnv?.VITE_JEECG_MARKETPLACE_LIST_URL
-    ?? viteEnv?.NEXT_PUBLIC_JEECG_MARKETPLACE_LIST_URL
-    ?? process.env.NEXT_PUBLIC_JEECG_MARKETPLACE_LIST_URL;
-  return configured ?? "/jeecg-boot/automl/marketplace/algorithms/list?pageNo=1&pageSize=100";
+  const configured = viteEnv?.VITE_AUTOML_API_URL
+    ?? viteEnv?.NEXT_PUBLIC_AUTOML_API_URL
+    ?? process.env.NEXT_PUBLIC_AUTOML_API_URL;
+  return (configured ?? "/sz-api").replace(/\/$/, "");
+}
+
+function automlAlgorithmSearchUrl(): string {
+  return `${automlApiBaseUrl()}/automl/algorithms/search?page=1&limit=100`;
+}
+
+function automlAlgorithmDetailUrl(listingId: string): string {
+  return `${automlApiBaseUrl()}/automl/algorithms/${encodeURIComponent(listingId)}`;
 }
 
 function notifySessionExpired(): void {
@@ -975,8 +1017,46 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   return (await response.json()) as T;
 }
 
-async function listJeecgMarketplaceListings(): Promise<MarketplaceListing[]> {
-  const response = await fetchWithTimeout(jeecgMarketplaceListUrl(), {
+function automlTaskType(taskType?: string): string {
+  const taskTypeMap: Record<string, string> = {
+    detection: "object-detection",
+    classification: "classification",
+    segmentation: "segmentation",
+    asr: "ocr",
+  };
+  return taskType?.trim() && taskTypeMap[taskType] ? taskTypeMap[taskType] : "object-detection";
+}
+
+function recordText(record: Record<string, unknown> | undefined, key: string): string {
+  const value = record?.[key];
+  return typeof value === "string" ? value : "";
+}
+
+function metricLabel(key: string): string {
+  const labels: Record<string, string> = {
+    map_50_90: "mAP50-95",
+    map_25_50: "mAP25-50",
+    precision: "精确率",
+    recall: "召回率",
+  };
+  return labels[key] ?? key;
+}
+
+function metricValue(value: unknown): string {
+  if (typeof value === "number") {
+    return `${(value * 100).toFixed(1).replace(/\.0$/, "")}%`;
+  }
+  return typeof value === "string" && value ? value : "待供应商公布";
+}
+
+function algorithmMetrics(metrics?: Record<string, unknown>): { label: string; value: string }[] {
+  return Object.entries(metrics ?? {})
+    .filter(([, value]) => value !== null && value !== undefined && value !== "")
+    .map(([key, value]) => ({ label: metricLabel(key), value: metricValue(value) }));
+}
+
+async function listAutomlAlgorithms(): Promise<MarketplaceListing[]> {
+  const response = await fetchWithTimeout(automlAlgorithmSearchUrl(), {
     headers: new Headers({ Accept: "application/json" }),
   });
   if (!response.ok) {
@@ -987,86 +1067,136 @@ async function listJeecgMarketplaceListings(): Promise<MarketplaceListing[]> {
     });
   }
   const payload = await response.json() as {
-    success?: boolean;
+    code?: string;
     message?: string;
-    result?: {
-      records?: Array<{
-        id?: string;
-        providerWorkspaceId?: string;
-        providerName?: string;
-        deploymentId?: string;
-        capabilitySpecId?: string | null;
-        capabilitySlug?: string | null;
-        capabilityVersionNumber?: number | null;
-        capabilityDisplayName?: string | null;
-        capabilityProblemDefinition?: string | null;
-        capabilityOutputContract?: string | null;
-        capabilityVerifiedScenes?: string[];
-        capabilityUnsupportedConditions?: string[];
-        endpointUrl?: string;
-        modelName?: string;
-        modelVersionNumber?: number;
-        taskType?: string;
-        title?: string;
-        summary?: string;
-        category?: string;
-        pricingUnit?: string;
-        pricePer1000Cents?: number;
-        monthlyQuotaUnits?: number;
-        status?: string;
-        publishedAt?: string | null;
-        subscriptionId?: string | null;
-        subscriptionStatus?: string | null;
-        remainingUnits?: number | null;
-        metrics?: { label: string; value: string }[];
-        classes?: string[];
-        modelArchitecture?: string;
-        inputSize?: string;
-        latencyP95?: string;
-      }>;
-    };
+    data?: { rows?: AutoMLAlgorithmSearchItem[] };
   };
-  if (payload.success === false) {
+  if (payload.code !== "0000") {
     throw new CatalogApiError(payload.message ?? "算法市场接口返回失败", {
       status: response.status,
       code: "request_failed",
       detail: null,
     });
   }
-  return (payload.result?.records ?? []).map((item) => ({
-    id: item.id ?? "",
-    provider_workspace_id: item.providerWorkspaceId ?? "",
-    provider_name: item.providerName ?? "",
-    deployment_id: item.deploymentId ?? "",
-    capability_spec_id: item.capabilitySpecId ?? null,
-    capability_slug: item.capabilitySlug ?? null,
-    capability_version_number: item.capabilityVersionNumber ?? null,
-    capability_display_name: item.capabilityDisplayName ?? null,
-    capability_problem_definition: item.capabilityProblemDefinition ?? null,
-    capability_output_contract: item.capabilityOutputContract ?? null,
-    capability_verified_scenes: item.capabilityVerifiedScenes ?? [],
-    capability_unsupported_conditions: item.capabilityUnsupportedConditions ?? [],
-    endpoint_url: item.endpointUrl ?? "",
-    model_name: item.modelName ?? "",
-    model_version_number: item.modelVersionNumber ?? 1,
-    task_type: item.taskType ?? "object-detection",
-    title: item.title ?? "",
-    summary: item.summary ?? "",
-    category: item.category ?? "",
-    pricing_unit: item.pricingUnit ?? "request",
-    price_per_1000_cents: item.pricePer1000Cents ?? 0,
-    monthly_quota_units: item.monthlyQuotaUnits ?? 0,
-    status: item.status ?? "published",
-    published_at: item.publishedAt ?? null,
-    subscription_id: item.subscriptionId ?? null,
-    subscription_status: item.subscriptionStatus ?? null,
-    remaining_units: item.remainingUnits ?? null,
-    metrics: item.metrics ?? [],
-    classes: item.classes ?? [],
-    model_architecture: item.modelArchitecture ?? item.modelName,
-    input_size: item.inputSize ?? "按接口说明",
-    latency_p95: item.latencyP95 ?? "待供应商公布",
+  return (payload.data?.rows ?? []).map((item) => ({
+    id: String(item.id ?? item.model_name ?? ""),
+    provider_workspace_id: "automl-provider",
+    provider_name: "AutoML",
+    deployment_id: String(item.id ?? ""),
+    capability_spec_id: null,
+    capability_slug: null,
+    capability_version_number: null,
+    capability_display_name: item.model_name ?? "",
+    capability_problem_definition: item.model_description ?? null,
+    capability_output_contract: null,
+    capability_verified_scenes: [item.model_scene, item.perspective].filter(Boolean) as string[],
+    capability_unsupported_conditions: [],
+    endpoint_url: "",
+    model_name: item.model_arch ?? "",
+    model_version_number: 1,
+    task_type: automlTaskType(item.model_type),
+    title: item.model_name ?? "",
+    summary: item.model_description ?? "",
+    category: item.model_scene ?? "",
+    pricing_unit: "request",
+    price_per_1000_cents: item.price ?? 0,
+    monthly_quota_units: 0,
+    status: item.is_available === false ? "unavailable" : "published",
+    published_at: null,
+    subscription_id: null,
+    subscription_status: null,
+    remaining_units: null,
+    is_valid: item.is_valid ?? false,
+    is_available: item.is_available ?? false,
+    metrics: [],
+    classes: [],
+    model_architecture: item.model_arch ?? "",
+    input_size: item.model_args?.imgsz ? `${item.model_args.imgsz}px` : "按接口说明",
+    latency_p95: "待供应商公布",
+    preview: {
+      scene: "ppe",
+      alt: `${item.model_name ?? "算法"}效果样例`,
+      image_url: item.detect_image_id ?? undefined,
+      boxes: [],
+    },
   }));
+}
+
+async function getAutomlAlgorithmDetail(listingId: string): Promise<MarketplaceListing> {
+  const response = await fetchWithTimeout(automlAlgorithmDetailUrl(listingId), {
+    headers: new Headers({ Accept: "application/json" }),
+  });
+  if (!response.ok) {
+    throw new CatalogApiError(`算法详情接口请求失败 (${response.status})`, {
+      status: response.status,
+      code: "request_failed",
+      detail: null,
+    });
+  }
+  const payload = await response.json() as {
+    code?: string;
+    message?: string;
+    data?: AutoMLAlgorithmDetail;
+  };
+  if (payload.code !== "0000" || !payload.data) {
+    throw new CatalogApiError(payload.message ?? "算法详情接口返回失败", {
+      status: response.status,
+      code: "request_failed",
+      detail: null,
+    });
+  }
+
+  const detail = payload.data;
+  const modelInfo = detail.model_info ?? {};
+  const id = String(modelInfo.id ?? listingId);
+  const name = recordText(modelInfo, "name") || "未命名算法";
+  const usageScene = detail.usage_scene ?? { suggest: "", unsuggest: "" };
+  const version = recordText(modelInfo, "version");
+  const inputSchema = detail.input_schema ?? {};
+  const resultSchema = detail.result_schema ?? {};
+  const inputWidth = typeof inputSchema.width === "number" ? inputSchema.width : null;
+  const inputHeight = typeof inputSchema.height === "number" ? inputSchema.height : null;
+  const inputSize = inputWidth && inputHeight
+    ? `${inputWidth}×${inputHeight}`
+    : recordText(inputSchema, "type") || "按接口说明";
+
+  return {
+    id,
+    provider_workspace_id: "automl-provider",
+    provider_name: "AutoML",
+    deployment_id: id,
+    capability_spec_id: null,
+    capability_slug: null,
+    capability_version_number: null,
+    capability_display_name: name,
+    capability_problem_definition: recordText(modelInfo, "description") || null,
+    capability_output_contract: recordText(resultSchema, "type") || null,
+    capability_verified_scenes: usageScene.suggest ? [usageScene.suggest] : [],
+    capability_unsupported_conditions: usageScene.unsuggest ? [usageScene.unsuggest] : [],
+    endpoint_url: `/v1/automl/${id}/infer`,
+    model_name: recordText(modelInfo, "framework") || "AutoML",
+    model_version_number: Number.parseInt(version.replace(/\D/g, ""), 10) || 1,
+    task_type: automlTaskType(recordText(modelInfo, "task_type")),
+    title: name,
+    summary: recordText(modelInfo, "description"),
+    category: recordText(modelInfo, "scene"),
+    pricing_unit: "request",
+    price_per_1000_cents: 0,
+    monthly_quota_units: 0,
+    status: recordText(modelInfo, "status") === "ENABLED" ? "published" : "unavailable",
+    published_at: null,
+    subscription_id: null,
+    subscription_status: null,
+    remaining_units: null,
+    is_valid: modelInfo.is_valid === true,
+    is_available: recordText(modelInfo, "status") === "ENABLED",
+    metrics: algorithmMetrics(detail.model_metric),
+    classes: [],
+    model_architecture: recordText(modelInfo, "framework"),
+    input_size: inputSize,
+    latency_p95: "待供应商公布",
+    usage_scene: usageScene,
+  };
 }
 
 async function requestBlob(path: string, options: RequestOptions = {}): Promise<Blob> {
@@ -1797,7 +1927,9 @@ export const catalogApi = {
   listMarketplaceListings: (workspaceId: string) =>
     request<MarketplaceListing[]>("/api/v1/marketplace/listings", { workspaceId }),
   listPublicMarketplaceListings: () =>
-    listJeecgMarketplaceListings(),
+    listAutomlAlgorithms(),
+  getPublicMarketplaceListing: (listingId: string) =>
+    getAutomlAlgorithmDetail(listingId),
   listMarketplaceSubmissions: (workspaceId: string) =>
     request<MarketplaceListingSubmission[]>("/api/v1/marketplace/submissions", {
       workspaceId,

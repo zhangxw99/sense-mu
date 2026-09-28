@@ -4,255 +4,141 @@ import {
   AlertCircle,
   ArrowUpRight,
   BarChart3,
-  Box,
-  Cloud,
   Check,
+  ChevronLeft,
   ChevronRight,
   Cpu,
   Database,
   FileCheck2,
   FileImage,
-  Film,
   Grid2X2,
-  Globe2,
-  HardDrive,
-  Link2,
   Layers3,
-  LoaderCircle,
-  LockKeyhole,
   List,
   ListChecks,
-  Mountain,
-  PersonStanding,
+  LoaderCircle,
+  LockKeyhole,
   Plus,
   RefreshCw,
-  RotateCw,
-  ScanText,
   Search,
-  Settings2,
-  Sparkles,
+  Shuffle,
   Tag,
   Trash2,
-  Video,
   UploadCloud,
   X,
 } from "lucide-react";
-import { type ChangeEvent, type DragEvent, type FormEvent, useEffect, useState } from "react";
+import { type ChangeEvent, type DragEvent, type FormEvent, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { DynamicAssetImage } from "../../components/dynamic-asset-image";
 import {
-  type AnnotationTask,
-  type Asset,
-  catalogApi,
-  type Dataset,
-  type DatasetVersion,
-  type DatasetVersionQualityReport,
-  type ModelVersion,
-  type Project,
-  type VideoExtractionJob,
-  type Workspace,
-} from "../../../lib/catalog-api";
+  type AutomlDataset,
+  type AutomlDatasetClass,
+  type AutomlDatasetItem,
+  type AutomlDatasetModel,
+  type AutomlId,
+  type AutomlVersionDetail,
+  type AutomlAnnotation,
+  type AutomlAnnotationTaskSummary,
+  createAutomlDatasetClass,
+  createAutomlDatasetFromFiles,
+  createAutomlEmptyDataset,
+  createAutomlDatasetVersionSnapshot,
+  createAutomlStandardAnnotationTask,
+  deleteAutomlDatasetClass,
+  getAutomlDatasetVersionDetails,
+  getAutomlFileUrls,
+  listAutomlAnnotationTasks,
+  listAutomlAnnotations,
+  listAutomlDatasetClasses,
+  listAutomlDatasetItems,
+  listAutomlDatasetModels,
+  listAutomlDatasets,
+  appendAutomlDatasetFiles,
+  importAutomlItems,
+  publishAutomlVersionToMarket,
+  unpublishAutomlVersionFromMarket,
+  notifyAutomlDatasetsChanged,
+  uploadAutomlFiles,
+  releaseAutomlDatasetVersion,
+  updateAutomlDatasetClass,
+  updateAutomlDatasetItemSplits,
+  uploadAutomlFile,
+  uploadAutomlFileChunked,
+} from "../../../lib/automl-data-api";
+import { autoSplitCounts, shuffledIndexes } from "../../../lib/automl-split";
+import { isAnnotationFile, isImageFile, isZipFile, pairAnnotationFiles } from "../../../lib/annotation-import";
 
-type ConnectionState = "loading" | "online" | "offline";
+type ConnectionState = "checking" | "online" | "offline";
 type DataView = "assets" | "annotation" | "classes" | "models" | "versions";
-type DatasetSourceMode = "upload" | "url" | "cloud" | "on-premise";
+type SplitFilter = "all" | "train" | "val" | "test";
+
+const TASK_TYPES = [
+  { value: "OBJECT_DETECTION", label: "目标检测", description: "用矩形框定位对象" },
+  { value: "CLASSIFICATION", label: "图像分类", description: "为整张图像分配类别" },
+  { value: "SEGMENTATION", label: "图像分割", description: "逐像素划分对象区域" },
+] as const;
 
 const taskTypeLabels: Record<string, string> = {
-  "object-detection": "目标检测",
-  classification: "图像分类",
-  segmentation: "实例分割",
-  "instance-segmentation": "实例分割",
-  "semantic-segmentation": "语义分割",
-  pose: "姿态估计",
-  "oriented-bounding-box": "旋转框检测",
-  "depth-estimation": "深度估计",
-  ocr: "文字识别",
+  OBJECT_DETECTION: "目标检测",
+  CLASSIFICATION: "图像分类",
+  SEGMENTATION: "语义分割",
+  INSTANCE_SEGMENTATION: "实例分割",
+  POSE: "姿态估计",
+  OCR: "文字识别",
 };
-
-const datasetTaskTypes = [
-  { id: "object-detection", label: "目标检测", description: "用矩形框定位对象", support: "内置标注" },
-  { id: "instance-segmentation", label: "实例分割", description: "逐个对象绘制掩码", support: "可导入" },
-  { id: "semantic-segmentation", label: "语义分割", description: "按类别标记每个像素", support: "可导入" },
-  { id: "classification", label: "图像分类", description: "为整张图像分配类别", support: "可导入" },
-  { id: "pose", label: "姿态估计", description: "标注对象关键点", support: "可导入" },
-  { id: "oriented-bounding-box", label: "旋转框检测", description: "用带方向的框定位对象", support: "可导入" },
-  { id: "depth-estimation", label: "深度估计", description: "逐像素估计距离", support: "可导入" },
-  { id: "ocr", label: "文字识别", description: "定位并转写图像文字", support: "可导入" },
-] as const;
-
-const projectTaskTypes = [
-  { id: "object-detection", label: "目标检测" },
-  { id: "classification", label: "图像分类" },
-  { id: "segmentation", label: "实例分割" },
-  { id: "pose", label: "姿态估计" },
-  { id: "ocr", label: "文字识别" },
-] as const;
-
-function taskUsesClasses(taskType: string): boolean {
-  return taskType !== "depth-estimation";
-}
-
-function datasetTaskTypeForProject(taskType: string): string {
-  return taskType === "segmentation" ? "instance-segmentation" : taskType;
-}
-
-function TaskTypeIcon({ taskType, size = 18 }: { taskType: string; size?: number }) {
-  if (taskType === "object-detection") return <Box size={size} />;
-  if (taskType === "segmentation" || taskType === "instance-segmentation" || taskType === "semantic-segmentation") return <Layers3 size={size} />;
-  if (taskType === "classification") return <Tag size={size} />;
-  if (taskType === "pose") return <PersonStanding size={size} />;
-  if (taskType === "oriented-bounding-box") return <RotateCw size={size} />;
-  if (taskType === "depth-estimation") return <Mountain size={size} />;
-  return <ScanText size={size} />;
-}
-
-function TaskTypePicker({
-  value,
-  onChange,
-  disabled = false,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <div className="dataset-task-type-grid">
-      {datasetTaskTypes.map((taskType) => (
-        <button
-          type="button"
-          key={taskType.id}
-          className={value === taskType.id ? "is-active" : ""}
-          aria-pressed={value === taskType.id}
-          disabled={disabled}
-          onClick={() => onChange(taskType.id)}
-        >
-          <span className="dataset-task-type-icon"><TaskTypeIcon taskType={taskType.id} /></span>
-          <span><strong>{taskType.label}</strong><small>{taskType.description}</small></span>
-          <em>{taskType.support}</em>
-        </button>
-      ))}
-    </div>
-  );
-}
 
 const splitLabels: Record<string, string> = {
   train: "训练集",
-  valid: "验证集",
+  val: "验证集",
   test: "测试集",
-  draft: "未划分",
 };
 
-const annotationStatusLabels: Record<AnnotationTask["status"], string> = {
-  annotating: "标注中",
-  review: "待检查",
-  done: "已完成",
+const taskStatusLabels: Record<string, string> = {
+  PENDING: "待开始",
+  ANNOTATING: "标注中",
+  COMPLETED: "已完成",
+  CANCELLED: "已取消",
 };
 
-const extractionStatusLabels: Record<VideoExtractionJob["status"], string> = {
-  queued: "等待处理",
-  preparing: "正在准备",
-  running: "正在抽帧",
-  succeeded: "已完成",
-  failed: "处理失败",
-  cancel_requested: "正在取消",
-  cancelled: "已取消",
+const versionStatusLabels: Record<string, string> = {
+  BUILDING: "生成中",
+  READY: "已就绪",
+  INVALID: "已失效",
 };
 
-function slugify(value: string): string {
-  return value
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 80);
+const ITEMS_PAGE_LIMIT = 20;
+const SMALL_FILE_BYTES = 8 * 1024 * 1024;
+const UPLOAD_BATCH_SIZE = 10;
+
+function formatBytes(size: AutomlId | number | null): string {
+  const bytes = Number(size ?? 0);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function formatBytes(value: number): string {
-  if (value < 1024) return `${value} B`;
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
-  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+function itemDisplayName(item: AutomlDatasetItem): string {
+  return item.originName || item.sampleObjectKey.split("/").pop() || String(item.itemId);
 }
 
-function assetDisplayName(asset: Asset): string {
-  const fallback = asset.checksum_sha256.slice(0, 12);
-  try {
-    const lastPart = decodeURIComponent(asset.uri.split("/").pop() || fallback);
-    return lastPart.replace(/^[a-f0-9]{16}-/, "") || fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function classMapsEqual(left: Record<string, string>, right: Record<string, string>): boolean {
-  const normalize = (value: Record<string, string>) =>
-    Object.entries(value).sort(([a], [b]) => Number(a) - Number(b));
-  return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
-}
-
-function AssetThumbnail({
-  workspaceId,
-  datasetId,
-  asset,
-}: {
-  workspaceId: string;
-  datasetId: string;
-  asset: Asset;
-}) {
-  const [source, setSource] = useState<string | null>(null);
+function ItemThumbnail({ objectKey, url, alt }: { objectKey: string; url: string | undefined; alt: string }) {
   const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    let objectUrl: string | null = null;
-    setSource(null);
-    setFailed(false);
-    void catalogApi
-      .getAssetContent(workspaceId, datasetId, asset.id, controller.signal)
-      .then((blob) => {
-        if (controller.signal.aborted) return;
-        objectUrl = URL.createObjectURL(blob);
-        setSource(objectUrl);
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setFailed(true);
-      });
-    return () => {
-      controller.abort();
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [workspaceId, datasetId, asset.id]);
-
-  if (failed) return <FileImage size={20} aria-hidden="true" />;
-  if (!source) return <LoaderCircle className="spinner" size={17} aria-label="正在加载素材预览" />;
-  return <DynamicAssetImage src={source} alt={assetDisplayName(asset)} />;
-}
-
-async function sha256(file: File): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
-  return Array.from(new Uint8Array(digest))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-async function imageDimensions(file: File): Promise<{ width: number; height: number }> {
-  const objectUrl = URL.createObjectURL(file);
-  try {
-    const image = new Image();
-    image.src = objectUrl;
-    await image.decode();
-    return { width: image.naturalWidth, height: image.naturalHeight };
-  } finally {
-    URL.revokeObjectURL(objectUrl);
+  if (url && !failed) {
+    return (
+      <DynamicAssetImage
+        src={url}
+        alt={alt}
+        onError={() => setFailed(true)}
+      />
+    );
   }
+  return <FileImage size={20} aria-hidden="true" data-thumbnail-fallback={objectKey} />;
 }
 
 export function DataWorkbench() {
   const searchParams = useSearchParams();
-  const requestedProjectId = searchParams.get("project");
   const requestedDatasetId = searchParams.get("dataset");
   const requestedVersionId = searchParams.get("version");
-  const requestedProjectCreation = searchParams.get("createProject") === "1";
   const requestedDatasetCreation = searchParams.get("createDataset") === "1";
   const requestedView = searchParams.get("view");
   const initialView: DataView = requestedView === "annotation"
@@ -261,386 +147,222 @@ export function DataWorkbench() {
     || requestedView === "versions"
     ? requestedView
     : "assets";
-  const [connection, setConnection] = useState<ConnectionState>("loading");
+
+  const [connection, setConnection] = useState<ConnectionState>("checking");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [workspace, setWorkspace] = useState<Workspace | null>(null);
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [project, setProject] = useState<Project | null>(null);
-  const [datasets, setDatasets] = useState<Dataset[]>([]);
-  const [dataset, setDataset] = useState<Dataset | null>(null);
-  const [assets, setAssets] = useState<Asset[]>([]);
-  const [versions, setVersions] = useState<DatasetVersion[]>([]);
-  const [modelVersions, setModelVersions] = useState<ModelVersion[]>([]);
+  const [datasets, setDatasets] = useState<AutomlDataset[]>([]);
+  const [dataset, setDataset] = useState<AutomlDataset | null>(null);
+  const [versionDetail, setVersionDetail] = useState<AutomlVersionDetail | null>(null);
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
-  const [qualityReport, setQualityReport] = useState<DatasetVersionQualityReport | null>(null);
-  const [qualityLoading, setQualityLoading] = useState(false);
-  const [workspaceName, setWorkspaceName] = useState("SenseMu 实验室");
-  const [projectName, setProjectName] = useState("PPE 安全检测");
-  const [projectSlug, setProjectSlug] = useState("ppe-safety-detection");
-  const [projectSlugTouched, setProjectSlugTouched] = useState(false);
-  const [projectDescription, setProjectDescription] = useState("");
-  const [projectTaskType, setProjectTaskType] = useState("object-detection");
-  const [projectModelFile, setProjectModelFile] = useState<File | null>(null);
-  const [datasetName, setDatasetName] = useState("ppe_site_a");
-  const [datasetDescription, setDatasetDescription] = useState("");
-  const [newDatasetTaskType, setNewDatasetTaskType] = useState("object-detection");
-  const [datasetSourceMode, setDatasetSourceMode] = useState<DatasetSourceMode>("upload");
-  const [datasetSourceFiles, setDatasetSourceFiles] = useState<File[]>([]);
-  const [datasetSourceUrl, setDatasetSourceUrl] = useState("");
-  const [pendingTaskType, setPendingTaskType] = useState("object-detection");
-  const [taskTypeDialogOpen, setTaskTypeDialogOpen] = useState(false);
-  const [classRows, setClassRows] = useState<Array<{ id: string; name: string }>>([]);
-  const [projectCreationOpen, setProjectCreationOpen] = useState(requestedProjectCreation);
-  const [datasetCreationOpen, setDatasetCreationOpen] = useState(requestedDatasetCreation);
+  const [items, setItems] = useState<AutomlDatasetItem[]>([]);
+  const [itemsTotal, setItemsTotal] = useState<AutomlId>(0);
+  const [allTotal, setAllTotal] = useState<AutomlId>(0);
+  const [itemsPage, setItemsPage] = useState(1);
+  const [splitFilter, setSplitFilter] = useState<SplitFilter>("all");
+  const [splitCounts, setSplitCounts] = useState<Record<"train" | "val" | "test", number>>({
+    train: 0,
+    val: 0,
+    test: 0,
+  });
+  const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
+  const [classes, setClasses] = useState<AutomlDatasetClass[]>([]);
+  const [tasks, setTasks] = useState<AutomlAnnotationTaskSummary[]>([]);
+  const [models, setModels] = useState<AutomlDatasetModel[]>([]);
+  const [creationOpen, setCreationOpen] = useState(requestedDatasetCreation);
   const [activeView, setActiveView] = useState<DataView>(initialView);
-  const [videoDialogOpen, setVideoDialogOpen] = useState(false);
-  const [pendingVideo, setPendingVideo] = useState<File | null>(null);
-  const [pendingVideos, setPendingVideos] = useState<File[]>([]);
-  const [frameInterval, setFrameInterval] = useState(1);
-  const [sourceVideos, setSourceVideos] = useState<Asset[]>([]);
-  const [extractionJobs, setExtractionJobs] = useState<VideoExtractionJob[]>([]);
-  const [cancellingExtractionId, setCancellingExtractionId] = useState<string | null>(null);
-  const [creatingAnnotationFromJobId, setCreatingAnnotationFromJobId] = useState<string | null>(null);
-  const [deduplicateFrames, setDeduplicateFrames] = useState(true);
-  const [annotationTasks, setAnnotationTasks] = useState<AnnotationTask[]>([]);
+  const [datasetName, setDatasetName] = useState("");
+  const [datasetDescription, setDatasetDescription] = useState("");
+  const [newDatasetTaskType, setNewDatasetTaskType] = useState<string>("OBJECT_DETECTION");
+  const [datasetClassNames, setDatasetClassNames] = useState("");
+  const [datasetSourceFiles, setDatasetSourceFiles] = useState<File[]>([]);
+  const [uploadProgress, setUploadProgress] = useState<string | null>(null);
   const [taskDialogOpen, setTaskDialogOpen] = useState(false);
-  const [taskName, setTaskName] = useState("新一批安全穿戴样本");
-  const [taskMethod, setTaskMethod] = useState<"manual" | "smart">("manual");
-  const [taskAssetScope, setTaskAssetScope] = useState<"unlabeled" | "all">("unlabeled");
-  const [assetSearch, setAssetSearch] = useState("");
-  const [assetSplitFilter, setAssetSplitFilter] = useState<"all" | "train" | "valid" | "test" | "draft">("all");
-  const [assetLayout, setAssetLayout] = useState<"grid" | "list">("grid");
-  const workspaceId = workspace?.id ?? null;
-  const datasetId = dataset?.id ?? null;
-  const datasetClassMap = dataset?.class_map;
+  const [splitDialogOpen, setSplitDialogOpen] = useState(false);
+  const [snapshotDialogOpen, setSnapshotDialogOpen] = useState(false);
+  const [snapshotSourceId, setSnapshotSourceId] = useState<string | null>(null);
+  const [splitRatios, setSplitRatios] = useState({ train: 70, val: 20, test: 10 });
+  const [taskName, setTaskName] = useState("");
+  const [itemSearch, setItemSearch] = useState("");
+  const [itemLayout, setItemLayout] = useState<"grid" | "list">("grid");
+  // 样本筛选：标注状态与类别走服务端过滤（跨分页准确），类别下拉选项来自数据集类别
+  const [annotatedFilter, setAnnotatedFilter] = useState<"all" | "annotated" | "unannotated">("all");
+  const [labelFilter, setLabelFilter] = useState("all");
+  // 标注概览：开启后逐个拉取当前页样本的标注，在卡片上以标签章粗略展示
+  const [annotationPreviewOn, setAnnotationPreviewOn] = useState(false);
+  const [itemAnnotations, setItemAnnotations] = useState<Record<string, AutomlAnnotation[]>>({});
+  // 每次出现新错误时递增，作为 error 提示的 key 重放抖动动画
+  const [errorShakeKey, setErrorShakeKey] = useState(0);
+  useEffect(() => {
+    if (error) setErrorShakeKey((n) => n + 1);
+  }, [error]);
+  const [classDraft, setClassDraft] = useState("");
+  const [classBusyId, setClassBusyId] = useState<AutomlId | null>(null);
 
-  async function loadWorkspaces() {
-    setConnection("loading");
+  const datasetId = dataset ? String(dataset.id) : null;
+  // 数据集切换瞬间 versionDetail 仍属于旧数据集，派生时按 datasetId 校验避免旧版本 ID 打到新数据集
+  const versions = versionDetail != null && String(versionDetail.datasetId) === datasetId
+    ? versionDetail.versions
+    : [];
+  const selectedVersion = versions.find((version) => String(version.id) === selectedVersionId)
+    ?? versions.reduce<(typeof versions)[number] | null>((latest, version) =>
+      Number(version.id) > Number(latest?.id ?? 0) ? version : latest, null)
+    ?? null;
+  const versionId = selectedVersion ? String(selectedVersion.id) : null;
+
+  useEffect(() => {
+    setCreationOpen(requestedDatasetCreation);
+  }, [requestedDatasetCreation]);
+
+  const loadDatasets = useCallback(async (preferredDatasetId: string | null) => {
+    setConnection("checking");
     setError(null);
     try {
-      const result = await catalogApi.listWorkspaces();
-      setWorkspace((current) => result.find((item) => item.id === current?.id) ?? result[0] ?? null);
+      const page = await listAutomlDatasets({ page: 1, limit: 50 });
+      const rows = page.rows;
+      setDatasets(rows);
+      setDataset((current) =>
+        rows.find((item) => String(item.id) === preferredDatasetId)
+        ?? rows.find((item) => String(item.id) === String(current?.id))
+        ?? rows[0]
+        ?? null,
+      );
       setConnection("online");
     } catch (reason) {
       setConnection("offline");
-      setError(reason instanceof Error ? reason.message : "无法连接数据服务");
+      setError(reason instanceof Error ? reason.message : "无法连接 AutoML 数据服务");
     }
-  }
-
-  useEffect(() => {
-    void loadWorkspaces();
   }, []);
 
   useEffect(() => {
-    setProjectCreationOpen(requestedProjectCreation);
-  }, [requestedProjectCreation]);
+    void loadDatasets(requestedDatasetId);
+  }, [loadDatasets, requestedDatasetId]);
+
+  const loadDatasetContext = useCallback(async (targetDatasetId: string, preferredVersionId: string | null) => {
+    // 切换数据集时先清空版本上下文，避免旧版本 ID 与新数据集组合触发后端 400
+    setVersionDetail(null);
+    setSelectedVersionId(null);
+    try {
+      const [detail, classList, modelList] = await Promise.all([
+        getAutomlDatasetVersionDetails(targetDatasetId),
+        listAutomlDatasetClasses(targetDatasetId),
+        listAutomlDatasetModels(targetDatasetId),
+      ]);
+      setVersionDetail(detail);
+      setClasses(classList);
+      setModels(modelList);
+      const versionIds = detail.versions.map((version) => String(version.id));
+      setSelectedVersionId((current) => {
+        if (preferredVersionId && versionIds.includes(preferredVersionId)) return preferredVersionId;
+        return current && versionIds.includes(current) ? current : null;
+      });
+      setItemsPage(1);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "数据集详情加载失败");
+    }
+  }, []);
 
   useEffect(() => {
-    setDatasetCreationOpen(requestedDatasetCreation);
-  }, [requestedDatasetCreation]);
-
-  useEffect(() => {
-    if (!workspace) {
-      setProjects([]);
-      setProject(null);
+    if (!datasetId) {
+      setVersionDetail(null);
+      setClasses([]);
+      setModels([]);
+      setTasks([]);
       return;
     }
-    void catalogApi
-      .listProjects(workspace.id)
-      .then((result) => {
-        setProjects(result);
-        setProject((current) =>
-          result.find((item) => item.id === requestedProjectId)
-          ?? result.find((item) => item.id === current?.id)
-          ?? result[0]
-          ?? null,
-        );
-      })
-      .catch((reason) => setError(reason instanceof Error ? reason.message : "项目加载失败"));
-  }, [workspace, requestedProjectId]);
+    void loadDatasetContext(datasetId, requestedVersionId);
+  }, [datasetId, loadDatasetContext, requestedVersionId]);
+
+  const loadSplitCounts = useCallback(async (targetDatasetId: string, targetVersionId: string) => {
+    try {
+      const countOf = (splitType?: string) =>
+        listAutomlDatasetItems(targetDatasetId, targetVersionId, {
+          page: 1,
+          limit: 1,
+          splitType,
+        }).then((page) => Number(page.total));
+      const [train, val, test, all] = await Promise.all([
+        countOf("train"),
+        countOf("val"),
+        countOf("test"),
+        countOf(),
+      ]);
+      setSplitCounts({ train, val, test });
+      // 「全部」tab 的计数独立于当前筛选的 itemsTotal，切筛选不会被覆盖
+      setAllTotal(all);
+    } catch {
+      setSplitCounts({ train: 0, val: 0, test: 0 });
+      setAllTotal(0);
+    }
+  }, []);
 
   useEffect(() => {
-    if (!workspace || !project) {
-      setDatasets([]);
-      setDataset(null);
-      setModelVersions([]);
+    if (!datasetId || !versionId) {
+      setTasks([]);
+      setItems([]);
+      setItemsTotal(0);
+      setAllTotal(0);
+      setSplitCounts({ train: 0, val: 0, test: 0 });
       return;
     }
     void Promise.all([
-      catalogApi.listDatasets(workspace.id, project.id),
-      catalogApi.listModelVersions(workspace.id, project.id),
+      listAutomlAnnotationTasks(datasetId, versionId),
+      listAutomlDatasetItems(datasetId, versionId, {
+        page: itemsPage,
+        limit: ITEMS_PAGE_LIMIT,
+        splitType: splitFilter === "all" ? undefined : splitFilter,
+        annotated: annotatedFilter === "all" ? undefined : annotatedFilter === "annotated",
+        labelName: labelFilter === "all" ? undefined : labelFilter,
+      }),
+      loadSplitCounts(datasetId, versionId),
     ])
-      .then(([result, nextModels]) => {
-        setDatasets(result);
-        setModelVersions(nextModels);
-        setDataset((current) =>
-          requestedDatasetCreation
-            ? null
-            : result.find((item) => item.id === requestedDatasetId)
-              ?? result.find((item) => item.id === current?.id)
-              ?? result[0]
-              ?? null,
-        );
+      .then(([taskList, itemPage]) => {
+        setTasks(taskList);
+        setItems(itemPage.rows);
+        setItemsTotal(itemPage.total);
       })
-      .catch((reason) => setError(reason instanceof Error ? reason.message : "数据集加载失败"));
-  }, [workspace, project, requestedDatasetCreation, requestedDatasetId]);
-
-  async function refreshDataset(selected = dataset) {
-    if (!workspace || !project || !selected) return;
-    const [nextAssets, nextVersions, nextDatasets, nextSourceVideos, nextExtractions] = await Promise.all([
-      catalogApi.listAssets(workspace.id, selected.id),
-      catalogApi.listVersions(workspace.id, selected.id),
-      catalogApi.listDatasets(workspace.id, project.id),
-      catalogApi.listSourceVideos(workspace.id, selected.id),
-      catalogApi.listVideoExtractions(workspace.id, selected.id),
-    ]);
-    setAssets(nextAssets);
-    setVersions(nextVersions);
-    setDatasets(nextDatasets);
-    const refreshedDataset = nextDatasets.find((item) => item.id === selected.id) ?? selected;
-    setDataset(refreshedDataset);
-    setClassRows(
-      Object.entries(refreshedDataset.class_map ?? {})
-        .sort(([left], [right]) => Number(left) - Number(right))
-        .map(([id, name]) => ({ id, name })),
-    );
-    setPendingTaskType(refreshedDataset.task_type);
-    setSourceVideos(nextSourceVideos);
-    setExtractionJobs(nextExtractions);
-  }
+      .catch((reason) => setError(reason instanceof Error ? reason.message : "样本数据加载失败"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [datasetId, versionId, splitFilter, itemsPage, annotatedFilter, labelFilter, loadSplitCounts]);
 
   useEffect(() => {
-    if (!datasetId || !workspaceId) {
-      setAssets([]);
-      setVersions([]);
-      return;
-    }
-    void Promise.all([
-      catalogApi.listAssets(workspaceId, datasetId),
-      catalogApi.listVersions(workspaceId, datasetId),
-      catalogApi.listSourceVideos(workspaceId, datasetId),
-      catalogApi.listVideoExtractions(workspaceId, datasetId),
-    ])
-      .then(([nextAssets, nextVersions, nextSourceVideos, nextExtractions]) => {
-        setAssets(nextAssets);
-        setVersions(nextVersions);
-        setSelectedVersionId((current) => {
-          if (requestedVersionId && nextVersions.some((version) => version.id === requestedVersionId)) {
-            return requestedVersionId;
-          }
-          return current && nextVersions.some((version) => version.id === current) ? current : null;
-        });
-        setSourceVideos(nextSourceVideos);
-        setExtractionJobs(nextExtractions);
-      })
-      .catch((reason) => setError(reason instanceof Error ? reason.message : "数据加载失败"));
-  }, [datasetId, requestedVersionId, workspaceId]);
-
-  useEffect(() => {
-    setClassRows(
-      Object.entries(datasetClassMap ?? {})
-        .sort(([left], [right]) => Number(left) - Number(right))
-        .map(([id, name]) => ({ id, name })),
-    );
-  }, [datasetClassMap]);
-
-  useEffect(() => {
-    if (dataset?.task_type) setPendingTaskType(dataset.task_type);
-  }, [dataset?.task_type]);
-
-  useEffect(() => {
-    if (project?.task_type) setNewDatasetTaskType(datasetTaskTypeForProject(project.task_type));
-  }, [project?.id, project?.task_type]);
-
-  useEffect(() => {
-    if (!workspaceId || !datasetId) return;
-    const hasActiveExtraction = extractionJobs.some((job) =>
-      ["queued", "preparing", "running", "cancel_requested"].includes(job.status),
-    );
-    if (!hasActiveExtraction) return;
-    const timer = window.setInterval(() => {
-      void Promise.all([
-        catalogApi.listVideoExtractions(workspaceId, datasetId),
-        catalogApi.listAssets(workspaceId, datasetId),
-      ])
-        .then(([jobs, nextAssets]) => {
-          setExtractionJobs(jobs);
-          setAssets(nextAssets);
-        })
-        .catch(() => undefined);
-    }, 2500);
-    return () => window.clearInterval(timer);
-  }, [datasetId, extractionJobs, workspaceId]);
-
-  useEffect(() => {
-    if (!workspaceId || !datasetId) {
-      setAnnotationTasks([]);
-      return;
-    }
-    void catalogApi
-      .listAnnotationTasks(workspaceId, datasetId)
-      .then(setAnnotationTasks)
-      .catch((reason) => setError(reason instanceof Error ? reason.message : "标注任务加载失败"));
-  }, [datasetId, workspaceId]);
-
-  const selectedVersion = versions.find((item) => item.id === selectedVersionId) ?? versions[0] ?? null;
-  const resolvedVersionId = selectedVersion?.id ?? null;
-
-  useEffect(() => {
-    if (!workspaceId || !resolvedVersionId) {
-      setQualityReport(null);
-      return;
-    }
-    setQualityLoading(true);
-    void catalogApi
-      .getDatasetVersionQualityReport(workspaceId, resolvedVersionId)
-      .then(setQualityReport)
-      .catch((reason) => setError(reason instanceof Error ? reason.message : "质量报告加载失败"))
-      .finally(() => setQualityLoading(false));
-  }, [resolvedVersionId, workspaceId]);
-
-  async function createWorkspace(event: FormEvent) {
-    event.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      const created = await catalogApi.createWorkspace({
-        name: workspaceName,
-        slug: slugify(workspaceName) || "sensemu-lab",
-      });
-      setWorkspace(created);
-      setNotice("工作区已创建");
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "工作区创建失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function createProject(event: FormEvent) {
-    event.preventDefault();
-    if (!workspace) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const created = await catalogApi.createProject(workspace.id, {
-        name: projectName,
-        slug: projectSlug || slugify(projectName) || "vision-project",
-        task_type: projectTaskType,
-        description: projectDescription.trim() || undefined,
-      });
-      setProjects([created, ...projects]);
-      setProject(created);
-      setProjectCreationOpen(false);
-      setProjectModelFile(null);
-      setNotice("项目已创建");
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "项目创建失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function createDataset(event: FormEvent) {
-    event.preventDefault();
-    if (!workspace || !project) return;
-    if (datasetSourceMode !== "upload") {
-      setError("当前数据源尚未接入，请先选择上传素材");
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      const created = await catalogApi.createDataset(workspace.id, project.id, {
-        name: datasetName,
-        task_type: newDatasetTaskType,
-        description: datasetDescription.trim() || undefined,
-      });
-      setDatasets([created, ...datasets]);
-      setDataset(created);
-      setDatasetCreationOpen(false);
-      const imageFiles = datasetSourceFiles.filter((file) => file.type.startsWith("image/"));
-      const videoFiles = datasetSourceFiles.filter((file) => file.type.startsWith("video/"));
-      setDatasetSourceFiles([]);
-      setDatasetDescription("");
-      setNotice(imageFiles.length ? "数据集已创建，正在导入素材" : "数据集已创建");
-      if (imageFiles.length) await uploadImageFiles(imageFiles, created);
-      if (videoFiles.length) {
-        setPendingVideos(videoFiles);
-        setPendingVideo(videoFiles[0]);
-        setVideoDialogOpen(true);
-        setNotice(`数据集已创建，请配置第 1 / ${videoFiles.length} 个视频的抽帧`);
+    const objectKeys = items
+      .map((item) => item.sampleObjectKey)
+      .filter((objectKey) => objectKey && !thumbnails[objectKey]);
+    if (!objectKeys.length) return;
+    let cancelled = false;
+    // batch-urls 可能与页面上其他请求撞后端 500ms 同 URL 防抖锁，失败按 900ms 间隔重试
+    async function fetchThumbs() {
+      for (let attempt = 0; attempt < 3 && !cancelled; attempt += 1) {
+        try {
+          const urls = await getAutomlFileUrls(objectKeys);
+          if (cancelled) return;
+          setThumbnails((current) => {
+            const next = { ...current };
+            for (const entry of urls) next[entry.objectKey] = entry.url;
+            return next;
+          });
+          return;
+        } catch {
+          if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 900));
+        }
       }
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "数据集创建失败");
-    } finally {
-      setBusy(false);
     }
-  }
-
-  async function uploadImageFiles(files: File[], targetDataset: Dataset | null = dataset) {
-    if (!workspace || !targetDataset || files.length === 0) return;
-    setBusy(true);
-    setError(null);
-    try {
-      for (const [index, file] of files.entries()) {
-        setNotice(`正在上传 ${index + 1} / ${files.length}：${file.name}`);
-        const checksum = await sha256(file);
-        const dimensions = await imageDimensions(file);
-        const intent = await catalogApi.createUploadIntent(workspace.id, targetDataset.id, {
-          filename: file.name,
-          content_type: file.type,
-          byte_size: file.size,
-          checksum_sha256: checksum,
-        });
-        const upload = await fetch(intent.upload_url, {
-          method: intent.method,
-          headers: intent.headers,
-          body: file,
-        });
-        if (!upload.ok) throw new Error(`对象存储上传失败 (${upload.status})`);
-        await catalogApi.registerAsset(workspace.id, targetDataset.id, {
-          object_key: intent.object_key,
-          media_type: file.type,
-          checksum_sha256: checksum,
-          byte_size: file.size,
-          width: dimensions.width,
-          height: dimensions.height,
-        });
-      }
-      await refreshDataset(targetDataset);
-      setNotice(`${files.length} 个资产已导入`);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "上传失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function selectMedia(event: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(event.target.files ?? []);
-    const videoFile = files.find((file) => file.type.startsWith("video/"));
-    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
-
-    if (videoFile) {
-      setPendingVideo(videoFile);
-      setVideoDialogOpen(true);
-    }
-    if (imageFiles.length) void uploadImageFiles(imageFiles);
-    event.target.value = "";
-  }
+    void fetchThumbs();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items]);
 
   function stageDatasetSourceFiles(files: File[]) {
-    const supportedFiles = files.filter(
-      (file) => file.type.startsWith("image/") || file.type.startsWith("video/"),
-    );
-    if (!supportedFiles.length) {
-      setError("请选择图片或视频文件");
+    const supported = files.filter((file) => isImageFile(file) || isAnnotationFile(file) || isZipFile(file));
+    if (!supported.length) {
+      setError("请选择图片、YOLO txt / VOC xml 标注或单个 zip 包");
       return;
     }
-    setDatasetSourceFiles((current) => [...current, ...supportedFiles].slice(0, 100));
+    setDatasetSourceFiles((current) => [...current, ...supported].slice(0, 100));
     setError(null);
   }
 
@@ -649,230 +371,97 @@ export function DataWorkbench() {
     event.target.value = "";
   }
 
-  async function createExtractionJob(event: FormEvent) {
+  function handleDrop(event: DragEvent<HTMLLabelElement>) {
     event.preventDefault();
-    if (!workspace || !dataset || !pendingVideo) return;
+    if (busy) return;
+    stageDatasetSourceFiles(Array.from(event.dataTransfer.files));
+  }
+
+  async function createDataset(event: FormEvent) {
+    event.preventDefault();
+    if (datasetSourceFiles.some(isZipFile)) {
+      setError("zip 包暂不参与创建数据集：请先创建数据集，再通过「导入素材」单独上传 zip");
+      return;
+    }
+    const hasAnnotations = datasetSourceFiles.some(isAnnotationFile);
     setBusy(true);
     setError(null);
     try {
-      const checksum = await sha256(pendingVideo);
-      const intent = await catalogApi.createUploadIntent(workspace.id, dataset.id, {
-        filename: pendingVideo.name,
-        content_type: pendingVideo.type,
-        byte_size: pendingVideo.size,
-        checksum_sha256: checksum,
-      });
-      const upload = await fetch(intent.upload_url, {
-        method: intent.method,
-        headers: intent.headers,
-        body: pendingVideo,
-      });
-      if (!upload.ok) throw new Error(`视频上传失败 (${upload.status})`);
-      const sourceAsset = await catalogApi.registerAsset(workspace.id, dataset.id, {
-        object_key: intent.object_key,
-        media_type: pendingVideo.type,
-        checksum_sha256: checksum,
-        byte_size: pendingVideo.size,
-        width: null,
-        height: null,
-      });
-      const job = await catalogApi.createVideoExtraction(
-        workspace.id,
-        dataset.id,
-        `video-${checksum.slice(0, 20)}-${Math.round(frameInterval * 1000)}-${deduplicateFrames}`,
-        {
-          source_asset_id: sourceAsset.id,
-          frame_interval_ms: Math.round(frameInterval * 1000),
-          deduplicate: deduplicateFrames,
-        },
-      );
-      setSourceVideos((current) => [sourceAsset, ...current.filter((item) => item.id !== sourceAsset.id)]);
-      setExtractionJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
-      const remainingVideos = pendingVideos.slice(1);
-      if (remainingVideos.length) {
-        setPendingVideos(remainingVideos);
-        setPendingVideo(remainingVideos[0]);
-        setNotice(`抽帧任务已创建：${pendingVideo.name}，请配置下一个视频`);
-      } else {
-        setPendingVideos([]);
-        setPendingVideo(null);
-        setVideoDialogOpen(false);
-        setActiveView("assets");
-        setNotice(`抽帧任务已创建：${pendingVideo.name}`);
+      const dataFileIds = datasetSourceFiles.length
+        ? (await uploadDatasetImages(datasetSourceFiles)).map((entry) => entry.fileId)
+        : [];
+      setUploadProgress("正在创建数据集…");
+      const classNames = datasetClassNames
+        .split(/[,，\n]/)
+        .map((name) => name.trim())
+        .filter(Boolean);
+      // 带标注文件：先建空数据集（版本自动创建），再结构化导入样本+标注，类别自动创建
+      if (hasAnnotations) {
+        const empty = await createAutomlEmptyDataset({
+          name: datasetName.trim(),
+          description: datasetDescription.trim() || undefined,
+          taskType: newDatasetTaskType,
+        });
+        const imported = await importWithAnnotations(String(empty.id), datasetSourceFiles);
+        setUploadProgress(null);
+        setDatasetSourceFiles([]);
+        setDatasetName("");
+        setDatasetDescription("");
+        setDatasetClassNames("");
+        setCreationOpen(false);
+        setDataset(empty);
+        await loadDatasets(String(empty.id));
+        await loadDatasetContext(String(empty.id), null);
+        notifyAutomlDatasetsChanged();
+        setNotice(`数据集与标注已创建：${imported} 个样本已写入 v1`);
+        return;
       }
+      // 有图走 from-files；无图创建空数据集，素材稍后用「导入素材」追加
+      const created = dataFileIds.length
+        ? await createAutomlDatasetFromFiles({
+          dataFileIds,
+          name: datasetName.trim(),
+          description: datasetDescription.trim() || undefined,
+          taskType: newDatasetTaskType,
+          classNames: classNames.length ? classNames : undefined,
+        })
+        : await createAutomlEmptyDataset({
+          name: datasetName.trim(),
+          description: datasetDescription.trim() || undefined,
+          taskType: newDatasetTaskType,
+          classNames: classNames.length ? classNames : undefined,
+        });
+      setUploadProgress(null);
+      setDatasetSourceFiles([]);
+      setDatasetName("");
+      setDatasetDescription("");
+      setDatasetClassNames("");
+      setCreationOpen(false);
+      setDataset(created);
+      setNotice(dataFileIds.length
+        ? `数据集已创建（v1 含 ${dataFileIds.length} 个样本）`
+        : "空数据集已创建，可用「导入素材」添加图片");
+      notifyAutomlDatasetsChanged();
+      await loadDatasets(String(created.id));
+      await loadDatasetContext(String(created.id), null);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "抽帧任务创建失败");
+      setUploadProgress(null);
+      setError(reason instanceof Error ? reason.message : "数据集创建失败");
     } finally {
       setBusy(false);
     }
   }
 
-  async function createAnnotationTask(event: FormEvent) {
-    event.preventDefault();
-    if (!workspace || !dataset) return;
-    if (usesClasses && (classMapChanged || hasInvalidClassName)) {
-      setError("请先保存类别定义，再创建标注任务");
-      return;
-    }
+  async function updateSplit(item: AutomlDatasetItem, split: "train" | "val" | "test") {
+    if (!datasetId || !versionId) return;
     setBusy(true);
     setError(null);
     try {
-      const created = await catalogApi.createAnnotationTask(workspace.id, dataset.id, {
-        name: taskName.trim() || "未命名标注任务",
-        method: taskMethod,
-        asset_scope: taskAssetScope,
-        class_map: dataset.class_map,
-      });
-      setAnnotationTasks((current) => [created, ...current]);
-      setTaskDialogOpen(false);
-      setNotice("手动标注任务已创建");
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "标注任务创建失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function openAnnotationTaskDialog() {
-    setTaskAssetScope("unlabeled");
-    setTaskDialogOpen(true);
-  }
-
-  async function cancelExtractionJob(job: VideoExtractionJob) {
-    if (!workspace || ["succeeded", "failed", "cancelled", "cancel_requested"].includes(job.status)) return;
-    setCancellingExtractionId(job.id);
-    setError(null);
-    try {
-      const updated = await catalogApi.cancelVideoExtraction(workspace.id, job.id);
-      setExtractionJobs((current) => current.map((item) => item.id === updated.id ? updated : item));
-      setNotice(updated.status === "cancelled" ? "抽帧任务已取消" : "已请求取消抽帧任务");
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "抽帧任务取消失败");
-    } finally {
-      setCancellingExtractionId(null);
-    }
-  }
-
-  async function createAnnotationTaskFromExtraction(job: VideoExtractionJob) {
-    if (!workspace || !dataset || job.status !== "succeeded") return;
-    if (usesClasses && (classMapChanged || hasInvalidClassName)) {
-      setError("请先保存类别定义，再创建标注任务");
-      return;
-    }
-    setCreatingAnnotationFromJobId(job.id);
-    setError(null);
-    try {
-      const source = sourceVideos.find((item) => item.id === job.source_asset_id);
-      const created = await catalogApi.createAnnotationTaskFromVideoExtraction(
-        workspace.id,
-        dataset.id,
-        job.id,
-        `${source ? assetDisplayName(source) : "视频抽帧"} 标注`,
-        dataset.class_map,
-      );
-      setAnnotationTasks((current) => [created, ...current.filter((item) => item.id !== created.id)]);
-      setActiveView("annotation");
-      setNotice(`标注任务已就绪：${created.asset_count} 个素材`);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "标注任务创建失败");
-    } finally {
-      setCreatingAnnotationFromJobId(null);
-    }
-  }
-
-  async function freezeVersion() {
-    if (!workspace || !dataset) return;
-    if (usesClasses && (classMapChanged || hasInvalidClassName)) {
-      setError("请先保存类别定义，再生成数据版本");
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      const version = await catalogApi.freezeDataset(workspace.id, dataset.id, dataset.class_map);
-      await refreshDataset(dataset);
-      setSelectedVersionId(version.id);
-      setNotice(`ds_v${version.version_number} 已冻结`);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "版本冻结失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function saveClassMap() {
-    if (!workspace || !dataset || !classMapChanged || hasInvalidClassName) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const updated = await catalogApi.updateDatasetClassMap(workspace.id, dataset.id, classMap);
-      setDataset(updated);
-      setDatasets((current) => current.map((item) => (item.id === updated.id ? updated : item)));
-      setNotice("类别定义已保存");
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "类别定义保存失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function saveDatasetTaskType() {
-    if (!workspace || !dataset || pendingTaskType === dataset.task_type) {
-      setTaskTypeDialogOpen(false);
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      const updated = await catalogApi.updateDatasetDefinition(
-        workspace.id,
-        dataset.id,
-        pendingTaskType,
-      );
-      const merged = {
-        ...dataset,
-        ...updated,
-        asset_count: dataset.asset_count,
-        version_count: dataset.version_count,
-      };
-      setDataset(merged);
-      setDatasets((current) => current.map((item) => (item.id === merged.id ? merged : item)));
-      if (!taskUsesClasses(merged.task_type)) setClassRows([]);
-      setTaskTypeDialogOpen(false);
-      setNotice(`任务类型已更新为${taskTypeLabels[merged.task_type] ?? merged.task_type}`);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "任务类型更新失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function addClassRow() {
-    setClassRows((current) => [...current, { id: String(current.length), name: "" }]);
-  }
-
-  function updateClassRow(index: number, name: string) {
-    setClassRows((current) => current.map((item, rowIndex) => rowIndex === index ? { ...item, name } : item));
-  }
-
-  function removeClassRow(index: number) {
-    setClassRows((current) => current
-      .filter((_, rowIndex) => rowIndex !== index)
-      .map((item, rowIndex) => ({ ...item, id: String(rowIndex) })));
-  }
-
-  async function updateSplit(asset: Asset, split: "train" | "valid" | "test") {
-    if (!workspace || !dataset) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const updated = await catalogApi.updateDatasetItem(
-        workspace.id,
-        dataset.id,
-        asset.id,
-        split,
-      );
-      setAssets((current) => current.map((item) => (item.id === asset.id ? updated : item)));
+      await updateAutomlDatasetItemSplits(datasetId, versionId, [
+        { itemId: item.itemId, splitType: split },
+      ]);
+      setItems((current) => current.map((row) => (row.itemId === item.itemId ? { ...row, splitType: split } : row)));
+      void loadSplitCounts(datasetId, versionId);
       setNotice(`已设为${splitLabels[split]}`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "数据划分更新失败");
@@ -881,208 +470,516 @@ export function DataWorkbench() {
     }
   }
 
-  async function uploadAnnotation(asset: Asset, event: ChangeEvent<HTMLInputElement>) {
+  // 多图上传：小文件合并走批量端点（单请求多文件）；超 8MB 的逐个分片。
+  // 不能逐个调 /files/upload——后端 500ms 同 URL 防抖会把紧随其后的第二张拒掉。
+  // 返回按输入顺序排列的 file→fileId 映射，供标注配对使用。
+  async function uploadDatasetImages(files: File[]): Promise<Array<{ file: File; fileId: AutomlId }>> {
+    const results: Array<{ file: File; fileId: AutomlId } | null> = new Array(files.length).fill(null);
+    const entries = files.map((file, index) => ({ file, index }));
+    const smallEntries = entries.filter((entry) => entry.file.size <= SMALL_FILE_BYTES);
+    const largeEntries = entries.filter((entry) => entry.file.size > SMALL_FILE_BYTES);
+    for (let offset = 0; offset < smallEntries.length; offset += UPLOAD_BATCH_SIZE) {
+      if (offset > 0) await new Promise((resolve) => setTimeout(resolve, 1200));
+      const group = smallEntries.slice(offset, offset + UPLOAD_BATCH_SIZE);
+      setUploadProgress(`正在上传图片 ${Math.min(offset + group.length, smallEntries.length)} / ${smallEntries.length}…`);
+      const uploaded = await uploadAutomlFiles(group.map((entry) => entry.file));
+      uploaded.forEach((item, position) => {
+        results[group[position].index] = { file: group[position].file, fileId: item.fileId };
+      });
+    }
+    for (const [index, entry] of largeEntries.entries()) {
+      setUploadProgress(`正在分片上传大图 ${index + 1} / ${largeEntries.length}：${entry.file.name}`);
+      results[entry.index] = { file: entry.file, fileId: (await uploadAutomlFileChunked(entry.file)).result.fileId };
+    }
+    return results.filter((entry): entry is { file: File; fileId: AutomlId } => entry !== null);
+  }
+
+  // 图片 + 标注（YOLO txt / VOC xml）混合导入：同名配对、缺失类别由后端自动创建、
+  // 样本与标注一次性写入当前最新版本（无版本自动建 v1）。
+  // YOLO 索引优先按数据库已有类别的 classIndex 映射；缺失索引以 class_{i} 占位并自动补建，
+  // 导入完成后跳转「类别」页签并提示用户维护类别名称。
+  async function importWithAnnotations(datasetId: string, files: File[]): Promise<number> {
+    const currentClasses = await listAutomlDatasetClasses(datasetId);
+    const missingClassIndices = new Set<number>();
+    const pair = await pairAnnotationFiles(files, (classIndex) => {
+      const known = currentClasses.find((entry) => entry.classIndex === classIndex)?.className;
+      if (known) return known;
+      missingClassIndices.add(classIndex);
+      return `class_${classIndex}`;
+    });
+    const uploaded = await uploadDatasetImages([
+      ...pair.pairs.map((entry) => entry.image),
+      ...pair.unpairedImages,
+    ]);
+    const idByFile = new Map(uploaded.map((entry) => [entry.file, entry.fileId]));
+    const payloadItems = [
+      ...pair.pairs.map((entry) => ({
+        dataFileId: idByFile.get(entry.image)!,
+        width: entry.width,
+        height: entry.height,
+        annotations: entry.annotations,
+      })),
+      ...pair.unpairedImages.map((image) => ({
+        dataFileId: idByFile.get(image)!,
+        width: null,
+        height: null,
+        annotations: [],
+      })),
+    ];
+    const version = await importAutomlItems(datasetId, payloadItems);
+    const annotationTotal = payloadItems.reduce((sum, item) => sum + item.annotations.length, 0);
+    const unmatchedHint = pair.unmatchedAnnotationFiles.length
+      ? `；${pair.unmatchedAnnotationFiles.length} 个标注文件因找不到同名图片被跳过（${pair.unmatchedAnnotationFiles.join("、")}）`
+      : "";
+    const importedSummary = `已导入 ${payloadItems.length} 个样本、${annotationTotal} 条标注到 ${version.version}${unmatchedHint}`;
+    if (missingClassIndices.size) {
+      // 缺失类别已由后端自动补建：刷新类别列表、跳转「类别」页签，提示用户维护类别名称
+      setClasses(await listAutomlDatasetClasses(datasetId));
+      setActiveView("classes");
+      const placeholderNames = [...missingClassIndices].sort((a, b) => a - b).map((index) => `class_${index}`).join("、");
+      setNotice(`${importedSummary}；检测到缺失类别已自动补建（${placeholderNames}），请维护类别名称`);
+      return payloadItems.length;
+    }
+    setNotice(importedSummary);
+    return payloadItems.length;
+  }
+
+  async function importFiles(event: ChangeEvent<HTMLInputElement>) {
     const input = event.currentTarget;
-    const file = input.files?.[0];
-    if (!workspace || !dataset || !file) return;
+    const files = Array.from(input.files ?? []).filter(
+      (file) => isImageFile(file) || isAnnotationFile(file) || isZipFile(file),
+    );
+    input.value = "";
+    if (!datasetId) return;
+    if (!files.length) {
+      setError("请选择图片、YOLO txt / VOC xml 标注或单个 zip 包");
+      return;
+    }
+    const zipFiles = files.filter(isZipFile);
+    if (zipFiles.length) {
+      if (files.length > 1) {
+        setError("zip 包需单独上传，不能与其他文件混选");
+        return;
+      }
+      setBusy(true);
+      setError(null);
+      try {
+        await uploadAutomlFile(zipFiles[0]);
+        setNotice("zip 包已上传；解压解析将在异步任务框架中提供");
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : "zip 上传失败");
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      const checksum = await sha256(file);
-      const intent = await catalogApi.createAnnotationUploadIntent(
-        workspace.id,
-        dataset.id,
-        asset.id,
-        {
-          filename: file.name,
-          byte_size: file.size,
-          checksum_sha256: checksum,
-        },
-      );
-      const upload = await fetch(intent.upload_url, {
-        method: intent.method,
-        headers: intent.headers,
-        body: file,
-      });
-      if (!upload.ok) throw new Error(`标注上传失败 (${upload.status})`);
-      const updated = await catalogApi.registerAnnotation(
-        workspace.id,
-        dataset.id,
-        asset.id,
-        {
-          object_key: intent.object_key,
-          byte_size: file.size,
-          checksum_sha256: checksum,
-        },
-      );
-      setAssets((current) => current.map((item) => (item.id === asset.id ? updated : item)));
-      setNotice("YOLO 标注已校验并登记");
+      const hasAnnotations = files.some(isAnnotationFile);
+      if (hasAnnotations) {
+        await importWithAnnotations(datasetId, files);
+      } else {
+        setNotice(`正在上传 ${files.length} 张图片…`);
+        const uploaded = await uploadDatasetImages(files);
+        const version = await appendAutomlDatasetFiles(datasetId, uploaded.map((entry) => entry.fileId));
+        setNotice(`已导入 ${uploaded.length} 个素材到 ${version.version}`);
+      }
+      // 刷新以接口返回的目标版本为准，跳到「全部」最后一页展示新样本
+      const detail = await getAutomlDatasetVersionDetails(datasetId);
+      const latest = detail.versions.reduce((acc, cur) => (Number(cur.id) > Number(acc?.id ?? 0) ? cur : acc));
+      const targetVersionId = String(latest.id);
+      setVersionDetail(detail);
+      setSelectedVersionId(targetVersionId);
+      void loadSplitCounts(datasetId, targetVersionId);
+      const lastPage = Math.max(1, Math.ceil(Number(latest.sampleCount) / ITEMS_PAGE_LIMIT));
+      setSplitFilter("all");
+      setItemsPage(lastPage);
+      const refreshed = await listAutomlDatasetItems(datasetId, targetVersionId, { page: lastPage, limit: ITEMS_PAGE_LIMIT });
+      setItems(refreshed.rows);
+      setItemsTotal(refreshed.total);
+      notifyAutomlDatasetsChanged();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "标注导入失败");
+      setError(reason instanceof Error ? reason.message : "素材导入失败");
     } finally {
-      input.value = "";
       setBusy(false);
     }
   }
 
-  const parsedClassNames = classRows.map((item) => item.name.trim()).filter(Boolean);
-  const hasInvalidClassName = classRows.some((item) => !item.name.trim());
-  const classMap = Object.fromEntries(classRows.map((item, index) => [String(index), item.name.trim()]));
-  const classMapChanged = !classMapsEqual(classMap, dataset?.class_map ?? {});
-  const annotatedCount = assets.filter((item) => item.annotation_uri).length;
-  const totalBytes = assets.reduce((sum, item) => sum + item.byte_size, 0);
-  const visibleQualityReport = qualityReport?.dataset_version_id === selectedVersion?.id
-    ? qualityReport
-    : null;
-  const annotationCount = visibleQualityReport?.class_distribution.reduce(
-    (sum, item) => sum + item.annotation_count,
-    0,
-  );
-  const splitCounts = assets.reduce(
-    (counts, item) => {
-      const split = item.split === "train" || item.split === "valid" || item.split === "test"
-        ? item.split
-        : "draft";
-      counts[split] += 1;
-      return counts;
-    },
-    { train: 0, valid: 0, test: 0, draft: 0 },
-  );
-  const normalizedAssetSearch = assetSearch.trim().toLowerCase();
-  const visibleAssets = assets.filter((item) => {
-    const matchesSplit = assetSplitFilter === "all"
-      || (assetSplitFilter === "draft" ? !item.split : item.split === assetSplitFilter);
-    const matchesSearch = !normalizedAssetSearch
-      || assetDisplayName(item).toLowerCase().includes(normalizedAssetSearch)
-      || item.checksum_sha256.includes(normalizedAssetSearch);
-    return matchesSplit && matchesSearch;
-  });
-  const assignedCount = assets.filter((item) => item.split).length;
-  const hasTrain = assets.some((item) => item.split === "train");
-  const hasValid = assets.some((item) => item.split === "valid");
-  const activeTaskType = dataset?.task_type ?? project?.task_type ?? "object-detection";
-  const requiresYolo = activeTaskType === "object-detection";
-  const supportsBuiltInAnnotation = activeTaskType === "object-detection";
-  const usesClasses = taskUsesClasses(activeTaskType);
-  const datasetDefinitionLocked = annotatedCount > 0 || annotationTasks.length > 0 || versions.length > 0;
-  const pendingAnnotationTasks = annotationTasks.filter((item) => item.status !== "done");
-  const trainingHref = project
-    ? selectedVersion
-      ? `/studio/training?project=${project.id}&datasetVersion=${selectedVersion.id}`
-      : `/studio/training?project=${project.id}`
-    : "/studio/training";
-  const freezeBlockers = [
-    assets.length === 0 ? "请先导入图片" : null,
-    usesClasses && parsedClassNames.length === 0 ? "请定义类别" : null,
-    usesClasses && (classMapChanged || hasInvalidClassName) ? "请先保存类别" : null,
-    requiresYolo && assignedCount !== assets.length ? "仍有图片未划分" : null,
-    requiresYolo && !hasTrain ? "缺少训练集" : null,
-    requiresYolo && !hasValid ? "缺少验证集" : null,
-    requiresYolo && annotatedCount !== assets.length ? "仍有图片未标注" : null,
-    pendingAnnotationTasks.length
-      ? `标注任务「${pendingAnnotationTasks[0].name}」尚未完成检查`
-      : null,
-  ].filter((item): item is string => Boolean(item));
-  const activeExtractionJobs = extractionJobs.filter((job) =>
-    ["queued", "preparing", "running", "cancel_requested"].includes(job.status),
-  );
-  const annotationSummary = annotationTasks.reduce(
-    (summary, item) => {
-      summary[item.status] += item.asset_count - (item.status === "done" ? 0 : item.completed_count);
-      return summary;
-    },
-    { annotating: 0, review: 0, done: 0 },
-  );
+  async function runAutoSplit() {
+    if (!datasetId || !versionId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      // 拉取当前版本全量样本（样本浏览页本身是分页的）
+      const all: AutomlDatasetItem[] = [];
+      for (let page = 1; ; page += 1) {
+        const pageResult = await listAutomlDatasetItems(datasetId, versionId, { page, limit: 200 });
+        all.push(...pageResult.rows);
+        if (!pageResult.rows.length || all.length >= Number(pageResult.total)) break;
+      }
+      const counts = autoSplitCounts(all.length, splitRatios);
+      const updates = shuffledIndexes(all.length).map((itemIndex, position) => ({
+        itemId: all[itemIndex].itemId,
+        splitType: position < counts.train
+          ? "train" as const
+          : position < counts.train + counts.val ? "val" as const : "test" as const,
+      }));
+      for (let offset = 0; offset < updates.length; offset += 200) {
+        await updateAutomlDatasetItemSplits(datasetId, versionId, updates.slice(offset, offset + 200));
+      }
+      const refreshed = await listAutomlDatasetItems(datasetId, versionId, {
+        page: itemsPage,
+        limit: ITEMS_PAGE_LIMIT,
+        splitType: splitFilter === "all" ? undefined : splitFilter,
+      });
+      setItems(refreshed.rows);
+      setItemsTotal(refreshed.total);
+      void loadSplitCounts(datasetId, versionId);
+      setSplitDialogOpen(false);
+      setNotice(`已自动划分：训练 ${counts.train} / 验证 ${counts.val} / 测试 ${counts.test}`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "自动划分失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createAnnotationTask(event: FormEvent) {
+    event.preventDefault();
+    if (!datasetId || !versionId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await createAutomlStandardAnnotationTask({
+        datasetId,
+        datasetVersionId: versionId,
+        name: taskName.trim() || "未命名标注任务",
+      });
+      const taskList = await listAutomlAnnotationTasks(datasetId, versionId);
+      setTasks(taskList);
+      setTaskDialogOpen(false);
+      setTaskName("");
+      setNotice("标注任务已创建");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "标注任务创建失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function releaseSelectedVersion() {
+    if (!datasetId || !versionId || !selectedVersion) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await releaseAutomlDatasetVersion(datasetId, versionId);
+      setNotice(`${selectedVersion.version} 已发布`);
+      setVersionDetail(await getAutomlDatasetVersionDetails(datasetId));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "发布失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleMarketPublish(listed: boolean) {
+    if (!datasetId || !versionId || !selectedVersion) return;
+    setBusy(true);
+    setError(null);
+    try {
+      if (listed) {
+        await unpublishAutomlVersionFromMarket(datasetId, versionId);
+        setNotice(`${selectedVersion.version} 已从数据市场下架`);
+      } else {
+        await publishAutomlVersionToMarket(datasetId, versionId);
+        setNotice(`${selectedVersion.version} 已发布到数据市场`);
+      }
+      setVersionDetail(await getAutomlDatasetVersionDetails(datasetId));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : (listed ? "下架失败" : "上架失败"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function snapshotVersion(sourceVersionId: string) {
+    if (!datasetId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const snapshot = await createAutomlDatasetVersionSnapshot(datasetId, sourceVersionId);
+      setNotice(`${snapshot.version} 已创建（未发布）。可继续导入素材与标注，完成后在「版本」页签发布。`);
+      setVersionDetail(await getAutomlDatasetVersionDetails(datasetId));
+      setSelectedVersionId(String(snapshot.id));
+      setItemsPage(1);
+      await loadDatasetContext(datasetId, String(snapshot.id));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "版本生成失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addClassRow(event: FormEvent) {
+    event.preventDefault();
+    if (!datasetId || !classDraft.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await createAutomlDatasetClass(datasetId, {
+        classCode: classDraft.trim().toLowerCase().replace(/\s+/g, "_"),
+        className: classDraft.trim(),
+      });
+      setClassDraft("");
+      setClasses(await listAutomlDatasetClasses(datasetId));
+      setNotice("类别已添加");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "类别添加失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function renameClass(target: AutomlDatasetClass, className: string) {
+    if (!datasetId || !className.trim() || className.trim() === target.className) return;
+    setClassBusyId(target.id);
+    setError(null);
+    try {
+      await updateAutomlDatasetClass(datasetId, target.id, {
+        datasetId: target.datasetId,
+        classCode: target.classCode,
+        classIndex: target.classIndex,
+        className: className.trim(),
+        color: target.color ?? undefined,
+        sortNo: target.sortNo,
+        statusCd: target.statusCd === "DISABLED" ? "DISABLED" : "ENABLED",
+      });
+      setClasses(await listAutomlDatasetClasses(datasetId));
+      setNotice("类别已更新");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "类别更新失败");
+    } finally {
+      setClassBusyId(null);
+    }
+  }
+
+  async function removeClassRow(target: AutomlDatasetClass) {
+    if (!datasetId) return;
+    setClassBusyId(target.id);
+    setError(null);
+    try {
+      await deleteAutomlDatasetClass(datasetId, target.id);
+      setClasses(await listAutomlDatasetClasses(datasetId));
+      setNotice("类别已删除");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "类别删除失败");
+    } finally {
+      setClassBusyId(null);
+    }
+  }
+
+  const normalizedSearch = itemSearch.trim().toLowerCase();
+  const visibleItems = normalizedSearch
+    ? items.filter((item) => itemDisplayName(item).toLowerCase().includes(normalizedSearch))
+    : items;
+  const itemsTotalPage = Math.max(1, Math.ceil(Number(itemsTotal) / ITEMS_PAGE_LIMIT));
+
+  // 标注概览开启后，补拉当前页样本的标注（逐样本缓存，翻页/筛选时按需增量加载）
+  useEffect(() => {
+    if (!annotationPreviewOn || !datasetId || !versionId) return;
+    const missing = visibleItems.filter((item) => itemAnnotations[String(item.itemId)] === undefined);
+    if (!missing.length) return;
+    let cancelled = false;
+    void (async () => {
+      const results = await Promise.allSettled(
+        missing.map((item) => listAutomlAnnotations(datasetId, versionId, item.itemId)),
+      );
+      if (cancelled) return;
+      setItemAnnotations((current) => {
+        const next = { ...current };
+        missing.forEach((item, index) => {
+          const entry = results[index];
+          next[String(item.itemId)] = entry.status === "fulfilled" ? entry.value : [];
+        });
+        return next;
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [annotationPreviewOn, visibleItems, datasetId, versionId]);
+  const totalSampleCount = selectedVersion?.sampleCount ?? 0;
+  const activeTaskType = dataset?.taskType ?? "OBJECT_DETECTION";
+  const taskTypeLabel = taskTypeLabels[activeTaskType] ?? activeTaskType;
+  const trainingHref = "/studio/training";
+
+  // 标注概览的标签章：按类别聚合（class × 数量）；itemAnnotations 无记录表示尚未加载
+  function annotationChipsFor(item: AutomlDatasetItem): string[] {
+    const annotations = itemAnnotations[String(item.itemId)];
+    if (!annotations?.length) return [];
+    const counts = new Map<string, number>();
+    for (const annotation of annotations) {
+      counts.set(annotation.labelName, (counts.get(annotation.labelName) ?? 0) + 1);
+    }
+    return [...counts.entries()].map(([name, count]) => (count > 1 ? `${name} ×${count}` : name));
+  }
 
   return (
     <section className="data-workbench" id="new-project">
       <div className="data-content">
         {error ? (
-          <div className="workbench-message error-message" role="alert">
+          <div className="workbench-message error-message" role="alert" key={`error-${errorShakeKey}`}>
             <AlertCircle size={15} aria-hidden="true" />
             <span>{error}</span>
-            <button type="button" onClick={() => setError(null)}>
-              关闭
-            </button>
+            <button type="button" onClick={() => setError(null)}>关闭</button>
           </div>
         ) : null}
         {notice ? (
           <div className="workbench-message notice-message" role="status">
             <Check size={14} aria-hidden="true" />
             <span>{notice}</span>
+            <button type="button" onClick={() => setNotice(null)}>关闭</button>
           </div>
         ) : null}
 
-        {connection === "offline" ? (
+        {connection === "offline" && !datasets.length ? (
           <article className="panel workbench-empty-state">
-            <span className="empty-state-icon">
-              <AlertCircle size={20} />
-            </span>
-            <span className="eyebrow">本地数据服务</span>
+            <span className="empty-state-icon"><AlertCircle size={20} /></span>
+            <span className="eyebrow">AutoML 数据服务</span>
             <h2>数据服务尚未连接</h2>
-            <p>启动 SenseMu 数据服务后，这里会显示真实项目与数据版本。</p>
-            <button className="primary-button" type="button" onClick={() => void loadWorkspaces()}>
+            <p>启动 sz-boot 后端（9992 端口）后，这里会显示真实数据集、样本与标注。</p>
+            <button
+              className="primary-button"
+              type="button"
+              onClick={() => void loadDatasets(requestedDatasetId)}
+            >
               <RefreshCw size={14} />
               重新连接
             </button>
           </article>
-        ) : connection === "loading" ? (
+        ) : connection === "checking" && !datasets.length ? (
           <article className="panel workbench-loading" aria-live="polite">
             <LoaderCircle size={20} className="spinner" />
-            <span>正在读取工作区…</span>
+            <span>正在读取数据集…</span>
           </article>
-        ) : !workspace ? (
-          <SetupForm
-            eyebrow="首次配置"
-            title="创建第一个工作区"
-            description="工作区是项目、数据和计费的隔离边界。"
-            label="工作区名称"
-            value={workspaceName}
-            onChange={setWorkspaceName}
-            onSubmit={createWorkspace}
-            busy={busy}
-          />
-        ) : !project || projectCreationOpen ? (
-          <ProjectSetupForm
-            name={projectName}
-            onNameChange={(value) => {
-              setProjectName(value);
-              if (!projectSlugTouched) setProjectSlug(slugify(value) || "vision-project");
-            }}
-            slug={projectSlug}
-            onSlugChange={(value) => {
-              setProjectSlugTouched(true);
-              setProjectSlug(slugify(value));
-            }}
-            description={projectDescription}
-            onDescriptionChange={setProjectDescription}
-            taskType={projectTaskType}
-            onTaskTypeChange={setProjectTaskType}
-            modelFile={projectModelFile}
-            onModelFileChange={setProjectModelFile}
-            onSubmit={createProject}
-            busy={busy}
-          />
-        ) : !dataset || datasetCreationOpen ? (
-          <DatasetSetupForm
-            name={datasetName}
-            onNameChange={setDatasetName}
-            description={datasetDescription}
-            onDescriptionChange={setDatasetDescription}
-            taskType={newDatasetTaskType}
-            onTaskTypeChange={setNewDatasetTaskType}
-            sourceMode={datasetSourceMode}
-            onSourceModeChange={setDatasetSourceMode}
-            sourceFiles={datasetSourceFiles}
-            onFilesSelected={selectDatasetSourceFiles}
-            onFilesDropped={stageDatasetSourceFiles}
-            sourceUrl={datasetSourceUrl}
-            onSourceUrlChange={setDatasetSourceUrl}
-            onSubmit={createDataset}
-            onCancel={() => setDatasetCreationOpen(false)}
-            canCancel={Boolean(dataset)}
-            busy={busy}
-          />
+        ) : !dataset || creationOpen ? (
+          <article className="panel setup-card dataset-create-surface">
+            <div className="dataset-create-header">
+              <span className="setup-icon"><Database size={19} /></span>
+              <div>
+                <span className="eyebrow">数据与标注</span>
+                <h2>新建数据集</h2>
+                <p>数据集由上传的图片文件创建，创建时生成 v1 版本。</p>
+              </div>
+              {dataset ? (
+                <button
+                  className="dataset-create-close"
+                  type="button"
+                  onClick={() => setCreationOpen(false)}
+                  aria-label="关闭新建数据集"
+                >
+                  <X size={16} />
+                </button>
+              ) : null}
+            </div>
+            <form onSubmit={(event) => void createDataset(event)}>
+              <label
+                className={`dataset-source-dropzone${datasetSourceFiles.length ? " has-files" : ""}`}
+                htmlFor="dataset-source-file-input"
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={handleDrop}
+              >
+                <input
+                  id="dataset-source-file-input"
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp,.txt,.xml"
+                  multiple
+                  onChange={selectDatasetSourceFiles}
+                  disabled={busy}
+                />
+                <span className="dataset-source-dropzone-icon"><UploadCloud size={21} /></span>
+                <strong>{datasetSourceFiles.length ? "继续添加图片" : "拖放图片到这里"}</strong>
+                <small>支持图片，或图片 + 同名 YOLO txt / VOC xml 标注（自动建类别与标注）；纯图片可直接创建，不选图片则创建空数据集</small>
+              </label>
+              {datasetSourceFiles.length ? (
+                <div className="dataset-source-file-list" aria-live="polite">
+                  <div className="dataset-source-file-summary">
+                    <strong>已选择 {datasetSourceFiles.length} 个文件</strong>
+                    <span>{uploadProgress ?? "创建后写入 v1 版本"}</span>
+                  </div>
+                  {datasetSourceFiles.slice(0, 4).map((file, index) => (
+                    <div className="dataset-source-file" key={`${file.name}-${file.lastModified}-${index}`}>
+                      {isAnnotationFile(file) ? <FileCheck2 size={14} /> : <FileImage size={14} />}
+                      <span>{file.name}</span>
+                      <small>{formatBytes(file.size)}</small>
+                    </div>
+                  ))}
+                  {datasetSourceFiles.length > 4
+                    ? <small className="dataset-source-more">还有 {datasetSourceFiles.length - 4} 个文件将在创建后导入</small>
+                    : null}
+                </div>
+              ) : null}
+
+              <div className="dataset-create-fields">
+                <label className="dataset-create-field">
+                  <span>数据集名称</span>
+                  <input
+                    value={datasetName}
+                    onChange={(event) => setDatasetName(event.target.value)}
+                    placeholder="例如：道路病害巡检"
+                    required
+                  />
+                </label>
+                <div className="dataset-create-field">
+                  <span>任务类型</span>
+                  <div className="project-task-type-grid">
+                    {TASK_TYPES.map((type) => (
+                      <button
+                        type="button"
+                        key={type.value}
+                        className={newDatasetTaskType === type.value ? "is-active" : ""}
+                        aria-pressed={newDatasetTaskType === type.value}
+                        onClick={() => setNewDatasetTaskType(type.value)}
+                        disabled={busy}
+                      >
+                        {type.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <label className="dataset-create-field">
+                <span>初始类别 <em>可选，逗号或换行分隔</em></span>
+                <input
+                  value={datasetClassNames}
+                  onChange={(event) => setDatasetClassNames(event.target.value)}
+                  placeholder="例如：helmet, person"
+                />
+                <small>类别编号按输入顺序生成；创建后也可在「类别」页维护。</small>
+              </label>
+              <label className="dataset-create-field">
+                <span>描述 <em>可选</em></span>
+                <textarea
+                  value={datasetDescription}
+                  onChange={(event) => setDatasetDescription(event.target.value)}
+                  placeholder="补充数据来源、采集范围或使用限制"
+                  rows={3}
+                  maxLength={500}
+                />
+              </label>
+              <div className="dataset-create-footer">
+                {dataset ? (
+                  <button className="secondary-button" type="button" onClick={() => setCreationOpen(false)}>取消</button>
+                ) : <span />}
+                <button className="primary-button" type="submit" disabled={busy}>
+                  {busy ? <LoaderCircle size={14} className="spinner" /> : <Plus size={14} />}
+                  {busy ? "正在创建" : datasetSourceFiles.length ? "创建数据集" : "创建空数据集"}
+                </button>
+              </div>
+            </form>
+          </article>
         ) : (
           <>
             <div className="dataset-object-breadcrumbs">
@@ -1098,39 +995,32 @@ export function DataWorkbench() {
               <div className="dataset-object-copy">
                 <div className="dataset-object-title-row">
                   <h1>{dataset.name}</h1>
-                  <button
-                    type="button"
-                    className="dataset-task-type dataset-task-type-button"
-                    onClick={() => {
-                      setPendingTaskType(activeTaskType);
-                      setTaskTypeDialogOpen(true);
-                    }}
-                  >
-                    <TaskTypeIcon taskType={activeTaskType} size={13} />
-                    {taskTypeLabels[activeTaskType] ?? activeTaskType}
-                    <Settings2 size={12} aria-hidden="true" />
-                  </button>
-                  <span className={`dataset-object-state${versions.length ? " is-ready" : ""}`}><i />{versions.length ? "已就绪" : "草稿"}</span>
+                  <span className="dataset-task-type">
+                    {activeTaskType === "OBJECT_DETECTION" ? <Layers3 size={13} /> : <Tag size={13} />}
+                    {taskTypeLabel}
+                  </span>
+                  <span className={`dataset-object-state${versions.length ? " is-ready" : ""}`}>
+                    <i />{versions.length ? "已就绪" : "草稿"}
+                  </span>
                 </div>
-                <p>{dataset.description || `${project.name} 的${taskTypeLabels[activeTaskType] ?? activeTaskType}数据集`}</p>
+                <p>{dataset.description || `${taskTypeLabel}数据集（${dataset.datasetCode}）`}</p>
                 <div className="dataset-object-meta" aria-label="数据集统计">
-                  <span><FileImage size={13} />{assets.length.toLocaleString("zh-CN")} 个素材</span>
-                  <span><FileCheck2 size={13} />{annotatedCount.toLocaleString("zh-CN")} 个已标注</span>
-                  {annotationCount !== undefined ? <span><ListChecks size={13} />{annotationCount.toLocaleString("zh-CN")} 个标注实例</span> : null}
-                  <span>{formatBytes(totalBytes)}</span>
-                  <span>更新于 {new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric" }).format(new Date(dataset.created_at))}</span>
+                  <span><FileImage size={13} />{totalSampleCount.toLocaleString("zh-CN")} 个样本</span>
+                  <span><FileCheck2 size={13} />{(dataset.annotatedSampleCount ?? 0).toLocaleString("zh-CN")} 个已标注</span>
+                  <span>{dataset.createTime ? `创建于 ${new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric" }).format(new Date(dataset.createTime))}` : null}</span>
+                  {selectedVersion ? <span> · 当前版本 {selectedVersion.version}（{versionStatusLabels[selectedVersion.statusCd] ?? selectedVersion.statusCd}{selectedVersion.marketStatusCd === "LISTED" ? " · 已上架" : ""}）</span> : null}
                 </div>
               </div>
               <div className="dataset-object-actions">
                 <button
                   className="secondary-button freeze-button"
                   type="button"
-                  disabled={busy || freezeBlockers.length > 0}
-                  onClick={() => void freezeVersion()}
-                  title={freezeBlockers.join("；")}
+                  disabled={busy || !versionId}
+                  onClick={() => { setSnapshotSourceId(versionId); setSnapshotDialogOpen(true); }}
+                  title="将当前版本的样本与标注复制为新的不可变版本"
                 >
                   <LockKeyhole size={14} aria-hidden="true" />
-                  冻结新版本
+                  创建新版本
                 </button>
                 <Link className="primary-button" href={trainingHref}>
                   开始训练<ArrowUpRight size={14} aria-hidden="true" />
@@ -1139,162 +1029,266 @@ export function DataWorkbench() {
             </header>
 
             <nav className="dataset-view-tabs" aria-label="数据集视图">
-              <button type="button" className={activeView === "assets" ? "is-active" : ""} onClick={() => setActiveView("assets")}>素材 <span>{assets.length}</span></button>
-              <button type="button" className={activeView === "annotation" ? "is-active" : ""} onClick={() => setActiveView("annotation")}>标注任务 <span>{annotationTasks.length}</span></button>
-              <button type="button" className={activeView === "classes" ? "is-active" : ""} onClick={() => setActiveView("classes")}>类别 <span>{parsedClassNames.length}</span></button>
-              <button type="button" className={activeView === "models" ? "is-active" : ""} onClick={() => setActiveView("models")}>模型 <span>{modelVersions.length}</span></button>
+              <button type="button" className={activeView === "assets" ? "is-active" : ""} onClick={() => setActiveView("assets")}>样本 <span>{Number(allTotal).toLocaleString("zh-CN")}</span></button>
+              <button type="button" className={activeView === "annotation" ? "is-active" : ""} onClick={() => setActiveView("annotation")}>标注任务 <span>{tasks.length}</span></button>
+              <button type="button" className={activeView === "classes" ? "is-active" : ""} onClick={() => setActiveView("classes")}>类别 <span>{classes.length}</span></button>
+              <button type="button" className={activeView === "models" ? "is-active" : ""} onClick={() => setActiveView("models")}>模型 <span>{models.length}</span></button>
               <button type="button" className={activeView === "versions" ? "is-active" : ""} onClick={() => setActiveView("versions")}>版本 <span>{versions.length}</span></button>
             </nav>
 
             {activeView === "assets" ? (
-              <>
-                <div className="dataset-ingest-bar">
+              <article className="panel asset-table-card">
+                <div className="asset-table-heading">
                   <div>
-                    <strong>导入素材</strong>
-                    <span>支持图片、视频文件和固定视频流</span>
+                    <h3>样本</h3>
+                    <p>{versionId ? `${splitFilter === "all" ? Number(itemsTotal) : visibleItems.length} 项 · ${selectedVersion?.version ?? ""}${selectedVersion?.statusCd === "READY" ? " · 已发布" : ""}${selectedVersion?.marketStatusCd === "LISTED" ? " · 已上架数据市场" : ""}` : "当前数据集还没有版本"}</p>
                   </div>
-                  <label className={`secondary-button compact dataset-upload-button ${busy ? "is-busy" : ""}`}>
-                    <input
-                      type="file"
-                      accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm"
-                      multiple
-                      disabled={busy}
-                      onChange={selectMedia}
-                    />
-                    {busy ? <LoaderCircle size={14} className="spinner" /> : <UploadCloud size={14} />}
-                    {busy ? "正在处理" : "选择文件"}
-                  </label>
-                  <button className="secondary-button compact" type="button" disabled title="待建立加密凭据和 Worker 访问边界"><Video size={14} />视频流待接入</button>
-                  {activeExtractionJobs.length ? <span className="dataset-extraction-state"><LoaderCircle size={13} className="spinner" />{activeExtractionJobs.length} 个抽帧任务处理中</span> : null}
+                  <div className="asset-heading-actions">
+                    <label className={`secondary-button compact dataset-upload-button${busy ? " is-busy" : ""}`}>
+                      <input
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp,.txt,.xml,.zip"
+                        multiple
+                        disabled={busy || selectedVersion?.statusCd === "READY"}
+                        onChange={(event) => void importFiles(event)}
+                      />
+                      {busy ? <LoaderCircle size={14} className="spinner" /> : <UploadCloud size={14} />}
+                      导入素材
+                    </label>
+                    {versionId ? (
+                      <button
+                        className={`secondary-button compact${annotationPreviewOn ? " is-active" : ""}`}
+                        type="button"
+                        disabled={busy}
+                        aria-pressed={annotationPreviewOn}
+                        title="在样本卡片上粗略显示标注信息"
+                        onClick={() => setAnnotationPreviewOn((on) => !on)}
+                      >
+                        <Tag size={14} />
+                        标注概览
+                      </button>
+                    ) : null}
+                    {versionId ? (
+                      <button
+                        className="secondary-button compact"
+                        type="button"
+                        disabled={busy || selectedVersion?.statusCd === "READY"}
+                        title={selectedVersion?.statusCd === "READY" ? "已发布版本不可修改，请创建新版本后再调整" : undefined}
+                        onClick={() => setSplitDialogOpen(true)}
+                      >
+                        <Shuffle size={14} />
+                        自动划分
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
-
-                <article className="panel asset-table-card">
-                  <div className="asset-table-heading">
-                    <div><h3>素材</h3><p>{visibleAssets.length} / {assets.length} 项</p></div>
+                <div className="asset-browser-toolbar">
+                  <div className="asset-split-tabs" role="tablist" aria-label="数据划分">
+                    {([
+                      ["all", "全部", Number(allTotal)],
+                      ["train", "训练集", splitCounts.train],
+                      ["val", "验证集", splitCounts.val],
+                      ["test", "测试集", splitCounts.test],
+                    ] as const).map(([value, label, count]) => (
+                      <button
+                        type="button"
+                        role="tab"
+                        key={value}
+                        aria-selected={splitFilter === value}
+                        className={splitFilter === value ? "is-active" : ""}
+                        onClick={() => { setSplitFilter(value); setItemsPage(1); }}
+                      >
+                        {label}<span>{count.toLocaleString("zh-CN")}</span>
+                      </button>
+                    ))}
                   </div>
-                  <div className="asset-browser-toolbar">
-                    <div className="asset-split-tabs" role="tablist" aria-label="数据划分">
-                      {([
-                        ["all", "全部", assets.length],
-                        ["train", "训练集", splitCounts.train],
-                        ["valid", "验证集", splitCounts.valid],
-                        ["test", "测试集", splitCounts.test],
-                        ["draft", "未划分", splitCounts.draft],
-                      ] as const).map(([value, label, count]) => (
-                        <button type="button" role="tab" aria-selected={assetSplitFilter === value} className={assetSplitFilter === value ? "is-active" : ""} onClick={() => setAssetSplitFilter(value)} key={value}>{label}<span>{count}</span></button>
+                  <div className="asset-browser-controls">
+                    <select
+                      className="asset-filter-select"
+                      value={annotatedFilter}
+                      aria-label="按标注状态筛选"
+                      onChange={(event) => { setAnnotatedFilter(event.target.value as typeof annotatedFilter); setItemsPage(1); }}
+                    >
+                      <option value="all">全部标注</option>
+                      <option value="annotated">已标注</option>
+                      <option value="unannotated">未标注</option>
+                    </select>
+                    <select
+                      className="asset-filter-select"
+                      value={labelFilter}
+                      aria-label="按类别筛选"
+                      onChange={(event) => { setLabelFilter(event.target.value); setItemsPage(1); }}
+                    >
+                      <option value="all">全部类别</option>
+                      {classes.map((entry) => (
+                        <option key={String(entry.id)} value={entry.className}>{entry.className}</option>
                       ))}
-                    </div>
-                    <div className="asset-browser-controls">
-                      <label className="asset-search"><Search size={14} /><span className="sr-only">搜索素材</span><input value={assetSearch} onChange={(event) => setAssetSearch(event.target.value)} placeholder="搜索素材" /></label>
-                      <div className="asset-layout-switch" aria-label="素材视图">
-                        <button type="button" className={assetLayout === "grid" ? "is-active" : ""} aria-label="网格视图" aria-pressed={assetLayout === "grid"} onClick={() => setAssetLayout("grid")}><Grid2X2 size={14} /></button>
-                        <button type="button" className={assetLayout === "list" ? "is-active" : ""} aria-label="列表视图" aria-pressed={assetLayout === "list"} onClick={() => setAssetLayout("list")}><List size={14} /></button>
-                      </div>
+                    </select>
+                    <label className="asset-search">
+                      <Search size={14} aria-label="搜索样本图标" />
+                      <span className="sr-only">搜索样本</span>
+                      <input value={itemSearch} onChange={(event) => setItemSearch(event.target.value)} placeholder="搜索本页样本" />
+                    </label>
+                    <div className="asset-layout-switch" aria-label="样本视图">
+                      <button type="button" className={itemLayout === "grid" ? "is-active" : ""} aria-label="网格视图" aria-pressed={itemLayout === "grid"} onClick={() => setItemLayout("grid")}><Grid2X2 size={14} /></button>
+                      <button type="button" className={itemLayout === "list" ? "is-active" : ""} aria-label="列表视图" aria-pressed={itemLayout === "list"} onClick={() => setItemLayout("list")}><List size={14} /></button>
                     </div>
                   </div>
-                  {extractionJobs.map((job) => {
-                    const source = sourceVideos.find((item) => item.id === job.source_asset_id);
-                    const canCancel = ["queued", "preparing", "running"].includes(job.status);
-                    const existingTask = annotationTasks.find((item) => item.source_video_extraction_job_id === job.id);
-                    return (
-                      <div className="asset-batch-row" key={job.id}>
-                        <span className="asset-preview"><Film size={16} /></span>
-                        <span><strong>{source ? assetDisplayName(source) : "视频文件"}</strong><small>每 {(job.frame_interval_ms / 1000).toLocaleString("zh-CN")} 秒抽取 1 帧{job.deduplicate ? " · 去除重复帧" : ""}</small></span>
-                        <span className={`batch-state ${job.status}`}>{extractionStatusLabels[job.status]}{job.status === "running" ? ` ${job.progress}%` : job.status === "succeeded" ? ` · ${job.frames_created} 张` : ""}</span>
-                        {canCancel ? <button className="batch-cancel-button" type="button" onClick={() => void cancelExtractionJob(job)} disabled={cancellingExtractionId === job.id} aria-label="取消抽帧任务" title="取消抽帧任务">{cancellingExtractionId === job.id ? <LoaderCircle size={13} className="spinner" /> : <X size={13} />}</button> : null}
-                        {job.status === "succeeded" ? <button className="batch-annotation-button" type="button" onClick={() => void createAnnotationTaskFromExtraction(job)} disabled={creatingAnnotationFromJobId === job.id}>{creatingAnnotationFromJobId === job.id ? <LoaderCircle size={13} className="spinner" /> : <FileCheck2 size={13} />}{existingTask ? "查看标注" : "标注"}</button> : null}
-                      </div>
-                    );
-                  })}
-                  {visibleAssets.length ? assetLayout === "grid" ? (
-                    <div className="asset-grid">
-                      {visibleAssets.map((asset) => (
-                        <article className="asset-grid-card" key={asset.id}>
-                          <div className="asset-grid-preview">
-                            {workspace && dataset ? <AssetThumbnail workspaceId={workspace.id} datasetId={dataset.id} asset={asset} /> : <FileImage size={20} />}
-                            <span className={asset.annotation_uri ? "is-ready" : ""}>{asset.annotation_uri ? "已标注" : "未标注"}</span>
-                          </div>
-                          <div className="asset-grid-copy"><strong title={assetDisplayName(asset)}>{assetDisplayName(asset)}</strong><small>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : formatBytes(asset.byte_size)}</small></div>
-                          <div className="asset-grid-actions">
-                            <select className={`split-select ${asset.split ?? "draft"}`} value={asset.split ?? ""} disabled={busy} aria-label="数据划分" onChange={(event) => { const split = event.target.value as "train" | "valid" | "test"; if (split) void updateSplit(asset, split); }}>
-                              <option value="" disabled>未划分</option><option value="train">训练集</option><option value="valid">验证集</option><option value="test">测试集</option>
-                            </select>
-                            <label className={`annotation-upload ${asset.annotation_uri ? "is-ready" : ""}`}><input type="file" accept=".txt,text/plain" disabled={busy} onChange={(event) => void uploadAnnotation(asset, event)} />{asset.annotation_uri ? <FileCheck2 size={13} /> : <UploadCloud size={13} />}<span>{asset.annotation_uri ? "替换标注" : "导入标注"}</span></label>
-                          </div>
-                        </article>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="asset-table">
-                      {visibleAssets.map((asset) => (
-                        <div className="asset-row" key={asset.id}>
-                          <span className="asset-preview">{workspace && dataset ? <AssetThumbnail workspaceId={workspace.id} datasetId={dataset.id} asset={asset} /> : <FileImage size={16} />}</span>
-                          <span className="asset-identity"><strong>{assetDisplayName(asset)}</strong><small>{asset.media_type}</small></span>
-                          <span>{asset.width && asset.height ? `${asset.width} × ${asset.height}` : "—"}</span>
-                          <span>{formatBytes(asset.byte_size)}</span>
+                </div>
+                {visibleItems.length ? itemLayout === "grid" ? (
+                  <div className="asset-grid">
+                    {visibleItems.map((item) => (
+                      <article className="asset-grid-card" key={item.itemId}>
+                        <div className="asset-grid-preview">
+                          <ItemThumbnail objectKey={item.sampleObjectKey} url={thumbnails[item.sampleObjectKey]} alt={itemDisplayName(item)} />
+                          <span className={Number(item.annotatedItemCount) > 0 ? "is-ready" : ""}>{Number(item.annotatedItemCount) > 0 ? "已标注" : "未标注"}</span>
+                          {annotationPreviewOn && itemAnnotations[String(item.itemId)] !== undefined ? (
+                            <div className="asset-annotation-chips" aria-label="标注概览">
+                              {annotationChipsFor(item).length
+                                ? annotationChipsFor(item).map((chip) => <span key={chip} className="annotation-chip">{chip}</span>)
+                                : <span className="annotation-chip is-empty">无标注</span>}
+                            </div>
+                          ) : null}
+                        </div>
+                        <div className="asset-grid-copy">
+                          <strong title={itemDisplayName(item)}>{itemDisplayName(item)}</strong>
+                          <small>{item.width && item.height ? `${item.width} × ${item.height}` : formatBytes(item.sizeBytes)}</small>
+                        </div>
+                        <div className="asset-grid-actions">
                           <select
-                            className={`split-select ${asset.split ?? "draft"}`}
-                            value={asset.split ?? ""}
-                            disabled={busy}
+                            className={`split-select ${item.splitType ?? "draft"}`}
+                            value={item.splitType}
+                            disabled={busy || selectedVersion?.statusCd === "READY"}
                             aria-label="数据划分"
                             onChange={(event) => {
-                              const split = event.target.value as "train" | "valid" | "test";
-                              if (split) void updateSplit(asset, split);
+                              const split = event.target.value as "train" | "val" | "test";
+                              if (split) void updateSplit(item, split);
                             }}
                           >
-                            <option value="" disabled>选择划分</option>
                             <option value="train">训练集</option>
-                            <option value="valid">验证集</option>
+                            <option value="val">验证集</option>
                             <option value="test">测试集</option>
                           </select>
-                          <label className={`annotation-upload ${asset.annotation_uri ? "is-ready" : ""}`}>
-                            <input type="file" accept=".txt,text/plain" disabled={busy} onChange={(event) => void uploadAnnotation(asset, event)} />
-                            {asset.annotation_uri ? <FileCheck2 size={13} /> : <UploadCloud size={13} />}
-                            <span>{asset.annotation_uri ? "已标注" : "导入标注"}</span>
-                          </label>
-                          <button type="button" title="复制素材地址" onClick={() => void navigator.clipboard.writeText(asset.uri)}><ArrowUpRight size={14} /></button>
+                          <Link
+                            className="annotation-upload"
+                            href={`/studio/automl/annotate?dataset=${encodeURIComponent(datasetId ?? "")}&version=${encodeURIComponent(versionId ?? "")}&item=${encodeURIComponent(String(item.itemId))}&from=data`}
+                          >
+                            {Number(item.annotatedItemCount) > 0 ? <FileCheck2 size={13} /> : <UploadCloud size={13} />}
+                            <span>{Number(item.annotatedItemCount) > 0 ? "查看标注" : "标注"}</span>
+                          </Link>
                         </div>
-                      ))}
-                    </div>
-                  ) : !activeExtractionJobs.length && !assets.length ? (
-                    <div className="asset-empty"><FileImage size={19} /><p>还没有素材，请先导入图片、视频或视频流。</p></div>
-                  ) : assets.length ? (
-                    <div className="asset-empty"><Search size={19} /><p>没有符合当前筛选的素材。</p></div>
-                  ) : null}
-                </article>
-              </>
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="asset-table">
+                    {visibleItems.map((item) => (
+                      <div className="asset-row" key={item.itemId}>
+                        <span className="asset-preview">
+                          <ItemThumbnail objectKey={item.sampleObjectKey} url={thumbnails[item.sampleObjectKey]} alt={itemDisplayName(item)} />
+                        </span>
+                        <span className="asset-identity">
+                          <strong>{itemDisplayName(item)}</strong>
+                          <small>{item.mediaType}</small>
+                          {annotationPreviewOn && itemAnnotations[String(item.itemId)] !== undefined ? (
+                            <span className="asset-annotation-chips is-inline">
+                              {annotationChipsFor(item).length
+                                ? annotationChipsFor(item).map((chip) => <span key={chip} className="annotation-chip">{chip}</span>)
+                                : <span className="annotation-chip is-empty">无标注</span>}
+                            </span>
+                          ) : null}
+                        </span>
+                        <span>{item.width && item.height ? `${item.width} × ${item.height}` : "—"}</span>
+                        <span>{formatBytes(item.sizeBytes)}</span>
+                        <select
+                          className={`split-select ${item.splitType ?? "draft"}`}
+                          value={item.splitType}
+                          disabled={busy}
+                          aria-label="数据划分"
+                          onChange={(event) => {
+                            const split = event.target.value as "train" | "val" | "test";
+                            if (split) void updateSplit(item, split);
+                          }}
+                        >
+                          <option value="train">训练集</option>
+                          <option value="val">验证集</option>
+                          <option value="test">测试集</option>
+                        </select>
+                        <Link
+                          className="annotation-upload"
+                          href={`/studio/automl/annotate?dataset=${encodeURIComponent(datasetId ?? "")}&version=${encodeURIComponent(versionId ?? "")}&item=${encodeURIComponent(String(item.itemId))}&from=data`}
+                        >
+                          {Number(item.annotatedItemCount) > 0 ? <FileCheck2 size={13} /> : <UploadCloud size={13} />}
+                          <span>{Number(item.annotatedItemCount) > 0 ? "查看标注" : "标注"}</span>
+                        </Link>
+                      </div>
+                    ))}
+                  </div>
+                ) : itemsTotal ? (
+                  <div className="asset-empty"><Search size={19} /><p>没有符合当前筛选的样本。</p></div>
+                ) : (
+                  <div className="asset-empty"><FileImage size={19} /><p>当前版本还没有样本。</p></div>
+                )}
+                {itemsTotalPage > 1 ? (
+                  <div className="asset-pagination" aria-label="样本分页">
+                    <button type="button" className="secondary-button compact" disabled={itemsPage <= 1} onClick={() => setItemsPage((page) => Math.max(1, page - 1))}>
+                      <ChevronLeft size={14} />上一页
+                    </button>
+                    <span>第 {itemsPage} / {itemsTotalPage} 页 · 共 {Number(itemsTotal).toLocaleString("zh-CN")} 项</span>
+                    <button type="button" className="secondary-button compact" disabled={itemsPage >= itemsTotalPage} onClick={() => setItemsPage((page) => Math.min(itemsTotalPage, page + 1))}>
+                      下一页<ChevronRight size={14} />
+                    </button>
+                  </div>
+                ) : null}
+              </article>
             ) : null}
 
             {activeView === "annotation" ? (
               <article className="panel annotation-tasks-card">
                 <div className="annotation-tasks-heading">
-                  <div><h3>标注任务</h3><p>任务沿用数据集的任务类型和类别定义，创建后保持固定。</p></div>
-                  <button className="primary-button" type="button" disabled={!supportsBuiltInAnnotation} title={supportsBuiltInAnnotation ? undefined : "当前内置标注器仅支持目标检测"} onClick={openAnnotationTaskDialog}><Plus size={14} />新建任务</button>
-                </div>
-                {!supportsBuiltInAnnotation ? (
-                  <div className="annotation-compatibility-note">
-                    <AlertCircle size={15} />
-                    <span><strong>{taskTypeLabels[activeTaskType] ?? activeTaskType}暂未接入内置编辑器</strong><small>当前先维护数据契约和类别；标注格式适配完成后开放创建任务。</small></span>
+                  <div>
+                    <h3>标注任务</h3>
+                    <p>任务基于当前版本（{selectedVersion?.version ?? "—"}）创建，入口在 AutoML 标注编辑器。</p>
                   </div>
-                ) : null}
+                  <button className="primary-button" type="button" disabled={!versionId} onClick={() => setTaskDialogOpen(true)}>
+                    <Plus size={14} />新建任务
+                  </button>
+                </div>
                 <div className="annotation-summary-strip">
-                  <div><span>标注中</span><strong>{annotationSummary.annotating}</strong></div>
-                  <div><span>待检查</span><strong>{annotationSummary.review}</strong></div>
-                  <div><span>已完成</span><strong>{annotationTasks.filter((item) => item.status === "done").reduce((sum, item) => sum + item.asset_count, 0)}</strong></div>
+                  <div><span>待开始 / 标注中</span><strong>{tasks.filter((task) => task.statusCd !== "COMPLETED" && task.statusCd !== "CANCELLED").length}</strong></div>
+                  <div><span>已完成</span><strong>{tasks.filter((task) => task.statusCd === "COMPLETED").length}</strong></div>
+                  <div><span>样本总数</span><strong>{totalSampleCount.toLocaleString("zh-CN")}</strong></div>
                 </div>
                 <div className="annotation-task-list">
-                  {annotationTasks.map((item) => {
-                    const progress = item.asset_count ? Math.round((item.completed_count / item.asset_count) * 100) : 0;
+                  {tasks.length ? tasks.map((task) => {
+                    const progress = Number(task.totalItemCount)
+                      ? Math.round((Number(task.annotatedItemCount) / Number(task.totalItemCount)) * 100)
+                      : 0;
                     return (
-                      <div className="annotation-task-row" key={item.id}>
+                      <div className="annotation-task-row" key={task.id}>
                         <span className="task-method-icon manual" aria-hidden="true"><FileCheck2 size={16} /></span>
-                        <span className="task-main"><strong>{item.name}</strong><small>{item.asset_scope === "all" ? "全部素材" : item.asset_scope === "video_extraction" ? "视频抽帧素材" : "未标注素材"} · 手动标注</small></span>
-                        <span className="task-progress"><i><b style={{ width: `${progress}%` }} /></i><small>{item.completed_count} / {item.asset_count}</small></span>
-                        <span className={`task-status ${item.status}`}>{annotationStatusLabels[item.status]}</span>
-                        <Link href={`/studio/data/annotate?task=${item.id}&project=${project.id}&dataset=${dataset.id}`} className="task-open-link">{item.status === "done" ? "查看" : item.status === "review" ? "检查" : "继续"}<ChevronRight size={14} /></Link>
+                        <span className="task-main">
+                          <strong>{task.name}</strong>
+                          <small>{task.method === "MODEL_ASSISTED" ? "智能预标注" : "手动标注"}</small>
+                        </span>
+                        <span className="task-progress">
+                          <i><b style={{ width: `${progress}%` }} /></i>
+                          <small>{task.annotatedItemCount} / {task.totalItemCount}</small>
+                        </span>
+                        <span className={`task-status ${task.statusCd === "COMPLETED" ? "done" : task.statusCd === "ANNOTATING" ? "annotating" : "review"}`}>
+                          {taskStatusLabels[task.statusCd] ?? task.statusCd}
+                        </span>
+                        <Link
+                          href={`/studio/automl/annotate?dataset=${encodeURIComponent(datasetId ?? "")}&version=${encodeURIComponent(versionId ?? "")}&task=${encodeURIComponent(String(task.id))}`}
+                          className="task-open-link"
+                        >
+                          {task.statusCd === "COMPLETED" ? "查看" : "继续"}<ChevronRight size={14} />
+                        </Link>
                       </div>
                     );
-                  })}
+                  }) : (
+                    <div className="asset-empty"><ListChecks size={19} /><p>当前版本还没有标注任务。</p></div>
+                  )}
                 </div>
               </article>
             ) : null}
@@ -1302,124 +1296,207 @@ export function DataWorkbench() {
             {activeView === "classes" ? (
               <article className="panel dataset-insights-card">
                 <div className="dataset-insights-heading">
-                  <div><span className="dataset-insights-icon"><BarChart3 size={17} /></span><span><h3>类别与标注统计</h3><p>快速判断类别分布和标注覆盖是否适合训练。</p></span></div>
-                  {selectedVersion ? <span className="immutable-chip"><LockKeyhole size={12} />版本 {selectedVersion.version_number}</span> : <span className="immutable-chip">当前草稿</span>}
-                </div>
-                {usesClasses ? (
-                  <div className="dataset-class-editor is-structured">
-                    <div className="dataset-class-editor-heading">
-                      <span className="readiness-icon"><ListChecks size={15} /></span>
-                      <span><strong>类别定义</strong><small>类别编号写入标注文件，创建任务后不再改变。</small></span>
-                      <span className={classMapChanged ? "class-state is-dirty" : "class-state"}>{classMapChanged ? "未保存" : "已同步"}</span>
-                    </div>
-                    {datasetDefinitionLocked ? (
-                      <div className="dataset-definition-lock-note"><LockKeyhole size={14} /><span><strong>类别已锁定</strong><small>已有标注任务、标注内容或固定版本。新类别请在新数据集中定义，避免历史编号错位。</small></span></div>
-                    ) : null}
-                    <div className="dataset-class-editor-list">
-                      {classRows.map((item, index) => (
-                        <div className="dataset-class-editor-row" key={item.id}>
-                          <span className={`class-color color-${index % 3}`} aria-hidden="true" />
-                          <span className="class-id">{index}</span>
-                          <input
-                            value={item.name}
-                            aria-label={`类别 ${index} 名称`}
-                            placeholder={index === 0 ? "例如：安全帽" : "类别名称"}
-                            disabled={busy || datasetDefinitionLocked}
-                            onChange={(event) => updateClassRow(index, event.target.value)}
-                          />
-                          <button type="button" aria-label={`删除类别 ${index}`} disabled={busy || datasetDefinitionLocked} onClick={() => removeClassRow(index)}><Trash2 size={14} /></button>
-                        </div>
-                      ))}
-                      {!classRows.length ? <div className="dataset-class-editor-empty"><Tag size={16} /><span>还没有类别。先添加业务中需要识别的对象。</span></div> : null}
-                    </div>
-                    <div className="dataset-class-editor-actions">
-                      <button className="secondary-button" type="button" disabled={busy || datasetDefinitionLocked} onClick={addClassRow}><Plus size={13} />添加类别</button>
-                      <button className="primary-button" type="button" disabled={busy || datasetDefinitionLocked || !classMapChanged || hasInvalidClassName} onClick={() => void saveClassMap()}><Check size={13} />保存类别</button>
-                    </div>
+                  <div>
+                    <span className="dataset-insights-icon"><BarChart3 size={17} /></span>
+                    <span><h3>类别定义</h3><p>类别编号（训练索引）创建后不可修改；已被标注引用的类别不能删除。</p></span>
                   </div>
-                ) : (
-                  <div className="dataset-classless-note"><Mountain size={17} /><span><strong>深度估计不使用类别</strong><small>该任务输出每个像素的深度值，数据版本只固定深度标注规范。</small></span></div>
-                )}
-                <div className="dataset-insight-summary">
-                  <div><span>标注覆盖</span><strong>{visibleQualityReport ? `${visibleQualityReport.annotation_coverage_percent}%` : assets.length ? `${Math.round((annotatedCount / assets.length) * 100)}%` : "—"}</strong></div>
-                  <div><span>类别</span><strong>{visibleQualityReport?.class_distribution.length ?? parsedClassNames.length}</strong></div>
-                  <div><span>标注实例</span><strong>{visibleQualityReport ? visibleQualityReport.class_distribution.reduce((sum, item) => sum + item.annotation_count, 0).toLocaleString("zh-CN") : "—"}</strong></div>
-                  <div><span>已知尺寸</span><strong>{visibleQualityReport?.image_dimensions.known_asset_count ?? assets.filter((asset) => asset.width && asset.height).length}</strong></div>
                 </div>
-                {visibleQualityReport?.class_distribution.length ? (
-                  <div className="dataset-class-table">
-                    <div className="dataset-class-row is-heading"><span>类别</span><span>涉及素材</span><span>标注实例</span><span>占比</span></div>
-                    {visibleQualityReport.class_distribution.map((item) => {
-                      const total = visibleQualityReport.class_distribution.reduce((sum, entry) => sum + entry.annotation_count, 0);
-                      const percentage = total ? Math.round((item.annotation_count / total) * 100) : 0;
-                      return (
-                        <div className="dataset-class-row" key={item.class_id}>
-                          <span><i aria-hidden="true" />{item.class_name}</span>
-                          <strong>{item.asset_count.toLocaleString("zh-CN")}</strong>
-                          <strong>{item.annotation_count.toLocaleString("zh-CN")}</strong>
-                          <span>{percentage}%</span>
-                        </div>
-                      );
-                    })}
+                <div className="dataset-class-editor is-structured">
+                  <div className="dataset-class-editor-list">
+                    {classes.length ? classes.map((datasetClass, index) => (
+                      <div className="dataset-class-editor-row" key={datasetClass.id}>
+                        <span className={`class-color color-${index % 3}`} aria-hidden="true" />
+                        <span className="class-id">{datasetClass.classIndex}</span>
+                        <input
+                          defaultValue={datasetClass.className}
+                          key={`${datasetClass.id}-${datasetClass.className}`}
+                          aria-label={`类别 ${datasetClass.classIndex} 名称`}
+                          disabled={classBusyId === datasetClass.id}
+                          onBlur={(event) => void renameClass(datasetClass, event.target.value)}
+                        />
+                        <button
+                          type="button"
+                          aria-label={`删除类别 ${datasetClass.className}`}
+                          disabled={classBusyId === datasetClass.id}
+                          onClick={() => void removeClassRow(datasetClass)}
+                        >
+                          {classBusyId === datasetClass.id ? <LoaderCircle size={14} className="spinner" /> : <Trash2 size={14} />}
+                        </button>
+                      </div>
+                    )) : (
+                      <div className="dataset-class-editor-empty">
+                        <Tag size={16} />
+                        <span>还没有类别。先添加业务中需要识别的对象。</span>
+                      </div>
+                    )}
                   </div>
-                ) : (
-                  <div className="dataset-insights-empty"><ListChecks size={18} /><p>生成数据版本后，这里会显示真实的类别分布与标注数量。</p></div>
-                )}
+                  <form className="dataset-class-editor-actions" onSubmit={(event) => void addClassRow(event)}>
+                    <input
+                      value={classDraft}
+                      onChange={(event) => setClassDraft(event.target.value)}
+                      placeholder="新类别名称，例如：安全帽"
+                      aria-label="新类别名称"
+                      disabled={busy}
+                    />
+                    <button className="secondary-button" type="submit" disabled={busy || !classDraft.trim()}>
+                      <Plus size={13} />添加类别
+                    </button>
+                  </form>
+                </div>
               </article>
             ) : null}
 
             {activeView === "models" ? (
               <article className="panel dataset-models-card">
                 <div className="dataset-models-heading">
-                  <div><span className="dataset-insights-icon"><Cpu size={17} /></span><span><h3>使用此数据集的模型</h3><p>模型详情保留训练参数、指标、测试和发布入口。</p></span></div>
-                  <Link className="primary-button" href={trainingHref}><Plus size={13} />新建训练</Link>
+                  <div>
+                    <span className="dataset-insights-icon"><Cpu size={17} /></span>
+                    <span><h3>使用此数据集的模型</h3><p>由训练任务产生的模型与模型版本。</p></span>
+                  </div>
                 </div>
-                {modelVersions.length ? (
+                {models.length ? (
                   <div className="dataset-model-list">
-                    {modelVersions.map((model) => (
-                      <Link className="dataset-model-row" href={`/studio/training/models/${model.id}?project=${project.id}`} key={model.id}>
+                    {models.map((model) => (
+                      <div className="dataset-model-row" key={model.modelVersionId}>
                         <span className="dataset-model-mark"><Cpu size={15} /></span>
-                        <span><strong>{model.model_name} · v{model.version_number}</strong><small>来自训练任务 {model.run_id.slice(0, 8)}</small></span>
-                        <span>{model.status === "approved" ? "可发布" : model.status === "rejected" ? "未通过" : "已登记"}</span>
-                        <ArrowUpRight size={14} aria-hidden="true" />
-                      </Link>
+                        <span>
+                          <strong>{model.modelName} · {model.modelVersion}</strong>
+                          <small>{model.trainingTask ? `来自训练任务 ${model.trainingTask.name}` : "训练任务信息缺失"}</small>
+                        </span>
+                        <span>{model.trainingTask?.createTime ?? "—"}</span>
+                      </div>
                     ))}
                   </div>
                 ) : (
-                  <div className="dataset-insights-empty"><Cpu size={18} /><p>尚无模型，生成一个固定数据版本后即可开始训练。</p><Link href={trainingHref}>前往训练</Link></div>
+                  <div className="dataset-insights-empty">
+                    <Cpu size={18} />
+                    <p>尚无模型；生成已发布的版本后即可在训练页发起训练。</p>
+                  </div>
                 )}
               </article>
             ) : null}
 
             {activeView === "versions" ? (
               <>
-                {usesClasses ? (
-                  <div className="dataset-readiness-grid version-readiness-grid">
-                    <div className="class-map-saved-state"><span className="readiness-icon"><ListChecks size={15} /></span><span><strong>类别</strong><small>{dataset?.class_map && Object.keys(dataset.class_map).length ? `${Object.keys(dataset.class_map).length} 个类别已保存` : "尚未定义类别"}</small></span></div>
-                    <div className={`freeze-readiness ${freezeBlockers.length ? "is-blocked" : "is-ready"}`}>
-                      <span className="readiness-icon">{freezeBlockers.length ? <AlertCircle size={15} /> : <Check size={15} />}</span>
-                      <span><strong>{freezeBlockers.length ? "还不能生成版本" : "可以生成训练版本"}</strong><small>{freezeBlockers.length ? freezeBlockers.join(" · ") : `${parsedClassNames.length} 个类别，素材均已就绪`}</small></span>
-                    </div>
-                  </div>
-                ) : null}
-
                 <aside className="panel versions-card versions-full-card">
-                  <div className="versions-heading"><div><h3>数据版本</h3><p>生成后内容固定，可直接用于训练。</p></div><span>{versions.length}</span></div>
+                  <div className="versions-heading">
+                    <div><h3>数据版本</h3><p>「创建新版本」会把当前版本的样本与标注复制为新的不可变版本。</p></div>
+                    <span>{versions.length}</span>
+                  </div>
                   {versions.length ? (
                     <div className="version-list">
                       {versions.map((version) => (
-                        <button className={`version-row${selectedVersion?.id === version.id ? " is-active" : ""}`} type="button" key={version.id} aria-pressed={selectedVersion?.id === version.id} onClick={() => setSelectedVersionId(version.id)}>
+                        <button
+                          className={`version-row${versionId === String(version.id) ? " is-active" : ""}`}
+                          type="button"
+                          key={version.id}
+                          aria-pressed={versionId === String(version.id)}
+                          onClick={() => { setSelectedVersionId(String(version.id)); setItemsPage(1); }}
+                        >
                           <span className="version-lock"><LockKeyhole size={12} /></span>
-                          <span><strong>ds_v{version.version_number}</strong><small>{version.asset_count} 个素材</small></span>
-                          <Check size={13} aria-label="已生成" />
+                          <span>
+                            <strong>{version.version}{version.marketStatusCd === "LISTED" ? " · 已上架" : ""}</strong>
+                            <small>
+                              {version.sampleCount} 个样本 · {versionStatusLabels[version.statusCd] ?? version.statusCd}
+                              {version.releasedAt ? " · 已发布" : ""}
+                            </small>
+                          </span>
+                          {version.statusCd === "READY" ? <Check size={13} aria-label="已发布" /> : <LoaderCircle size={13} className="spinner" />}
                         </button>
                       ))}
                     </div>
-                  ) : <div className="versions-empty"><LockKeyhole size={17} /><p>素材标注、检查并完成划分后，再生成第一个版本。</p></div>}
+                  ) : (
+                    <div className="versions-empty"><LockKeyhole size={17} /><p>当前数据集还没有版本。</p></div>
+                  )}
                 </aside>
 
                 {selectedVersion ? (
-                  <DatasetQualityCard version={selectedVersion} report={visibleQualityReport} loading={qualityLoading} />
+                  <article className="panel dataset-quality-card">
+                    <div className="dataset-quality-heading">
+                      <div>
+                        <h3>{selectedVersion.version} 版本统计</h3>
+                        <p>统计来自版本快照，随版本固定。</p>
+                      </div>
+                      <span className="quality-version-state">
+                        {selectedVersion.sampleCount} 个样本
+                        {selectedVersion.marketStatusCd === "LISTED" ? " · 已上架数据市场" : ""}
+                      </span>
+                      {selectedVersion.statusCd !== "READY" ? (
+                        <button
+                          className="secondary-button compact"
+                          type="button"
+                          disabled={busy}
+                          title="校验全部样本已标注且划分完成后，将版本置为已发布"
+                          onClick={() => void releaseSelectedVersion()}
+                        >
+                          <Check size={14} />
+                          发布版本
+                        </button>
+                      ) : null}
+                      {selectedVersion.statusCd === "READY" && selectedVersion.marketStatusCd !== "LISTED" ? (
+                        <button
+                          className="secondary-button compact market-publish-button"
+                          type="button"
+                          disabled={busy}
+                          title="将已发布版本上架到数据市场，供其他人在数据市场查询使用"
+                          onClick={() => void toggleMarketPublish(false)}
+                        >
+                          <UploadCloud size={14} />
+                          发布到数据市场
+                        </button>
+                      ) : null}
+                      {selectedVersion.marketStatusCd === "LISTED" ? (
+                        <button
+                          className="secondary-button compact"
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void toggleMarketPublish(true)}
+                        >
+                          从数据市场下架
+                        </button>
+                      ) : null}
+                    </div>
+                    <div className="dataset-quality-body">
+                      <div className="quality-summary-grid">
+                        <div><span>样本总数</span><strong>{selectedVersion.sampleCount}</strong><small>版本内样本行数</small></div>
+                        <div><span>图片样本</span><strong>{selectedVersion.imageCount}</strong><small>媒体类型为图片</small></div>
+                        <div><span>类别</span><strong>{selectedVersion.classSampleStats.length}</strong><small>存在标注样本的类别</small></div>
+                      </div>
+                      <div className="quality-detail-grid">
+                        <section className="quality-detail-section">
+                          <div className="quality-section-heading"><FileCheck2 size={14} /><strong>数据划分</strong></div>
+                          <div className="quality-split-list">
+                            {(["train", "val", "test"] as const).map((splitType) => {
+                              const count = splitType === "train" ? splitCounts.train : splitType === "val" ? splitCounts.val : splitCounts.test;
+                              const percentage = selectedVersion.sampleCount ? Math.round((count / selectedVersion.sampleCount) * 100) : 0;
+                              return (
+                                <div key={splitType}>
+                                  <span>{splitLabels[splitType]}</span>
+                                  <strong>{count}</strong>
+                                  <small>{percentage}%</small>
+                                  <i aria-hidden="true"><b style={{ width: `${percentage}%` }} /></i>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </section>
+                        <section className="quality-detail-section">
+                          <div className="quality-section-heading"><ListChecks size={14} /><strong>类别样本分布</strong></div>
+                          {selectedVersion.classSampleStats.length ? (
+                            <div className="quality-class-list">
+                              {selectedVersion.classSampleStats.map((stat) => (
+                                <div key={stat.classId}>
+                                  <span>{stat.className}</span>
+                                  <small>索引 {stat.classIndex}</small>
+                                  <strong>{stat.sampleCount} 个样本</strong>
+                                </div>
+                              ))}
+                            </div>
+                          ) : <p className="quality-empty">当前版本尚无类别标注分布。</p>}
+                        </section>
+                      </div>
+                    </div>
+                  </article>
                 ) : null}
               </>
             ) : null}
@@ -1427,419 +1504,123 @@ export function DataWorkbench() {
         )}
       </div>
 
-      {videoDialogOpen ? (
+      {splitDialogOpen ? (
         <div className="workbench-dialog-backdrop" role="presentation">
-          <form className="workbench-dialog video-import-dialog" role="dialog" aria-modal="true" aria-labelledby="video-dialog-title" onSubmit={createExtractionJob}>
-            <div className="dialog-heading"><div><span className="dialog-icon"><Film size={18} /></span><span><h2 id="video-dialog-title">从视频生成素材</h2><p>抽取的画面会进入当前数据集。{pendingVideos.length > 1 ? `还剩 ${pendingVideos.length - 1} 个视频待配置。` : ""}</p></span></div><button type="button" onClick={() => { setVideoDialogOpen(false); setPendingVideos([]); setPendingVideo(null); }} aria-label="关闭">×</button></div>
-            <div className="selected-video-file"><Film size={17} /><span><strong>{pendingVideo?.name ?? "尚未选择视频"}</strong><small>{pendingVideo ? formatBytes(pendingVideo.size) : "请返回素材页选择 MP4、MOV 或 WebM"}</small></span></div>
-            <section className="video-purpose-panel"><div><strong>抽取图片用于训练</strong><small>按固定间隔生成独立图片，适合检测、分类和分割。</small></div><span>当前阶段</span></section>
-            <div className="frame-interval-field"><span><strong>抽帧间隔</strong><small>间隔越小，生成的连续画面越多。</small></span><span className="number-input-wrap"><input aria-label="抽帧间隔" type="number" min="0.1" step="0.1" value={frameInterval} onChange={(event) => setFrameInterval(Number(event.target.value) || 1)} /><b>秒 / 帧</b></span></div>
-            <div className="extraction-options"><label><input type="checkbox" checked={deduplicateFrames} onChange={(event) => setDeduplicateFrames(event.target.checked)} />去除重复帧</label></div>
-            <div className="dialog-callout"><span>处理方式</span><strong>后台生成图片</strong><small>完成后自动写入当前数据集，可直接创建标注任务。</small></div>
-            <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => { setVideoDialogOpen(false); setPendingVideos([]); setPendingVideo(null); }}>取消</button><button className="primary-button" type="submit" disabled={!pendingVideo || busy}>{busy ? "正在上传" : pendingVideos.length > 1 ? "保存并配置下一个" : "创建抽帧任务"}</button></div>
+          <form
+            className="workbench-dialog annotation-task-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="split-dialog-title"
+            onSubmit={(event) => { event.preventDefault(); void runAutoSplit(); }}
+          >
+            <div className="dialog-heading">
+              <div>
+                <span className="dialog-icon"><Shuffle size={18} /></span>
+                <span>
+                  <h2 id="split-dialog-title">自动划分数据集</h2>
+                  <p>随机打乱当前版本（{selectedVersion?.version ?? "—"}）的全部 {Number(allTotal).toLocaleString("zh-CN")} 个样本，并覆盖现有划分。</p>
+                </span>
+              </div>
+              <button type="button" onClick={() => setSplitDialogOpen(false)} aria-label="关闭">×</button>
+            </div>
+            <div className="dialog-fields">
+              <label><span>训练集 %</span><input type="number" min={0} max={100} value={splitRatios.train} onChange={(event) => setSplitRatios((current) => ({ ...current, train: Number(event.target.value) || 0 }))} /></label>
+              <label><span>验证集 %</span><input type="number" min={0} max={100} value={splitRatios.val} onChange={(event) => setSplitRatios((current) => ({ ...current, val: Number(event.target.value) || 0 }))} /></label>
+              <label><span>测试集 %</span><input type="number" min={0} max={100} value={splitRatios.test} onChange={(event) => setSplitRatios((current) => ({ ...current, test: Number(event.target.value) || 0 }))} /></label>
+            </div>
+            {splitRatios.train + splitRatios.val + splitRatios.test !== 100 ? (
+              <p className="resource-action-error" role="alert">三项比例之和必须等于 100（当前 {splitRatios.train + splitRatios.val + splitRatios.test}）。</p>
+            ) : (
+              <p className="automl-panel-hint">
+                将分配为 训练 {autoSplitCounts(Number(allTotal), splitRatios).train} / 验证 {autoSplitCounts(Number(allTotal), splitRatios).val} / 测试 {autoSplitCounts(Number(allTotal), splitRatios).test}。每次执行都会重新随机洗牌，可在样本列表手动微调个别样本。
+              </p>
+            )}
+            <div className="dialog-actions">
+              <button className="secondary-button" type="button" onClick={() => setSplitDialogOpen(false)}>取消</button>
+              <button
+                className="primary-button"
+                type="submit"
+                disabled={busy || splitRatios.train + splitRatios.val + splitRatios.test !== 100 || Number(allTotal) === 0}
+              >
+                {busy ? <LoaderCircle size={14} className="spinner" /> : <Shuffle size={14} />}
+                {busy ? "正在划分" : "执行划分"}
+              </button>
+            </div>
           </form>
         </div>
       ) : null}
 
-      {taskTypeDialogOpen && dataset ? (
+      {snapshotDialogOpen ? (
         <div className="workbench-dialog-backdrop" role="presentation">
-          <div className="workbench-dialog dataset-task-type-dialog" role="dialog" aria-modal="true" aria-labelledby="dataset-task-type-title">
-            <div className="dialog-heading"><div><span className="dialog-icon"><Settings2 size={18} /></span><span><h2 id="dataset-task-type-title">数据集任务类型</h2><p>任务类型决定标注结构、质量检查和可用训练引擎。</p></span></div><button type="button" onClick={() => setTaskTypeDialogOpen(false)} aria-label="关闭">×</button></div>
-            {datasetDefinitionLocked ? (
-              <div className="dataset-task-type-warning"><AlertCircle size={16} /><span><strong>当前任务类型已锁定</strong><small>已有标注任务、标注内容或固定版本。为保护历史数据，请新建数据集后选择其他类型。</small></span></div>
-            ) : (
-              <div className="dataset-task-type-warning is-neutral"><AlertCircle size={16} /><span><strong>修改前请确认标注格式</strong><small>不同任务类型的标注互不兼容；保存后会以数据集定义为准。</small></span></div>
-            )}
-            <TaskTypePicker value={pendingTaskType} onChange={setPendingTaskType} disabled={datasetDefinitionLocked || busy} />
-            <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setTaskTypeDialogOpen(false)}>取消</button><button className="primary-button" type="button" disabled={busy || datasetDefinitionLocked || pendingTaskType === dataset.task_type} onClick={() => void saveDatasetTaskType()}>保存任务类型</button></div>
-          </div>
+          <form
+            className="workbench-dialog annotation-task-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="snapshot-dialog-title"
+            onSubmit={(event) => { event.preventDefault(); setSnapshotDialogOpen(false); void snapshotVersion(snapshotSourceId ?? versionId ?? ""); }}
+          >
+            <div className="dialog-heading">
+              <div>
+                <span className="dialog-icon"><LockKeyhole size={18} /></span>
+                <span>
+                  <h2 id="snapshot-dialog-title">创建新版本</h2>
+                  <p>把所选版本的样本与标注复制为新的不可变版本。新版本为「构建中」，可继续导入素材与标注。</p>
+                </span>
+              </div>
+              <button type="button" onClick={() => setSnapshotDialogOpen(false)} aria-label="关闭">×</button>
+            </div>
+            <label className="snapshot-source-label" htmlFor="snapshot-source-select">基于版本创建</label>
+            <select
+              id="snapshot-source-select"
+              className="asset-filter-select"
+              value={snapshotSourceId ?? versionId ?? ""}
+              onChange={(event) => setSnapshotSourceId(event.target.value)}
+            >
+              {versions.map((version) => (
+                <option key={String(version.id)} value={String(version.id)}>
+                  {version.version}（{version.sampleCount} 个样本，{version.statusCd === "READY" ? "已发布" : "构建中"}）
+                </option>
+              ))}
+            </select>
+            <div className="dataset-create-footer">
+              <button type="button" className="secondary-button" onClick={() => setSnapshotDialogOpen(false)}>取消</button>
+              <button type="submit" className="primary-button" disabled={busy || !snapshotSourceId}>创建新版本</button>
+            </div>
+          </form>
         </div>
       ) : null}
 
       {taskDialogOpen ? (
         <div className="workbench-dialog-backdrop" role="presentation">
-          <form className="workbench-dialog annotation-task-dialog" role="dialog" aria-modal="true" aria-labelledby="task-dialog-title" onSubmit={createAnnotationTask}>
-            <div className="dialog-heading"><div><span className="dialog-icon"><FileCheck2 size={18} /></span><span><h2 id="task-dialog-title">新建标注任务</h2><p>创建后，素材会固定在任务中。</p></span></div><button type="button" onClick={() => setTaskDialogOpen(false)} aria-label="关闭">×</button></div>
+          <form className="workbench-dialog annotation-task-dialog" role="dialog" aria-modal="true" aria-labelledby="task-dialog-title" onSubmit={(event) => void createAnnotationTask(event)}>
+            <div className="dialog-heading">
+              <div>
+                <span className="dialog-icon"><FileCheck2 size={18} /></span>
+                <span>
+                  <h2 id="task-dialog-title">新建标注任务</h2>
+                  <p>任务基于当前版本（{selectedVersion?.version ?? "—"}）的全部样本创建。</p>
+                </span>
+              </div>
+              <button type="button" onClick={() => setTaskDialogOpen(false)} aria-label="关闭">×</button>
+            </div>
             <div className="annotation-task-definition">
-              <span className="dataset-task-type-icon"><TaskTypeIcon taskType={activeTaskType} /></span>
-              <span><strong>{taskTypeLabels[activeTaskType] ?? activeTaskType}</strong><small>{parsedClassNames.length ? `${parsedClassNames.length} 个类别：${parsedClassNames.slice(0, 3).join("、")}${parsedClassNames.length > 3 ? "…" : ""}` : "尚未定义类别"}</small></span>
+              <span className="dataset-task-type-icon">{activeTaskType === "OBJECT_DETECTION" ? <Layers3 /> : <Tag />}</span>
+              <span>
+                <strong>{taskTypeLabel}</strong>
+                <small>{classes.length ? `${classes.length} 个类别：${classes.slice(0, 3).map((row) => row.className).join("、")}${classes.length > 3 ? "…" : ""}` : "尚未定义类别"}</small>
+              </span>
               <button type="button" onClick={() => { setTaskDialogOpen(false); setActiveView("classes"); }}>管理类别</button>
             </div>
             <div className="dialog-fields">
               <label><span>任务名称</span><input value={taskName} onChange={(event) => setTaskName(event.target.value)} required /></label>
-              <label><span>素材范围</span><select value={taskAssetScope} onChange={(event) => setTaskAssetScope(event.target.value as "unlabeled" | "all")}><option value="unlabeled">全部未标注素材</option><option value="all">全部素材</option></select></label>
             </div>
-            <fieldset className="annotation-method-picker"><legend>标注方式</legend><button type="button" className="is-active" onClick={() => setTaskMethod("manual")}><FileCheck2 size={17} /><span><strong>手动标注</strong><small>逐张绘制并确认标注</small></span></button><button type="button" className="is-disabled" disabled><Sparkles size={17} /><span><strong>智能预标注</strong><small>尚未接入真实模型</small></span></button></fieldset>
-            <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setTaskDialogOpen(false)}>取消</button><button className="primary-button" type="submit" disabled={!parsedClassNames.length || classMapChanged}>创建任务</button></div>
+            <div className="dialog-actions">
+              <button className="secondary-button" type="button" onClick={() => setTaskDialogOpen(false)}>取消</button>
+              <button className="primary-button" type="submit" disabled={busy}>创建任务</button>
+            </div>
           </form>
         </div>
       ) : null}
     </section>
-  );
-}
-
-function DatasetQualityCard({
-  version,
-  report,
-  loading,
-}: {
-  version: DatasetVersion;
-  report: DatasetVersionQualityReport | null;
-  loading: boolean;
-}) {
-  return (
-    <article className="panel dataset-quality-card">
-      <div className="dataset-quality-heading">
-        <div><h3>ds_v{version.version_number} 数据质量</h3><p>这份检查结果会随版本固定。</p></div>
-        <span className="quality-version-state">{version.asset_count} 个素材</span>
-      </div>
-      {loading || !report ? (
-        <div className="quality-loading" aria-live="polite"><LoaderCircle size={16} className="spinner" />正在读取质量检查</div>
-      ) : (
-        <div className="dataset-quality-body">
-          <div className="quality-summary-grid">
-            <div><span>标注覆盖</span><strong>{report.annotation_coverage_percent}%</strong><small>{report.annotated_asset_count} / {report.asset_count} 个素材</small></div>
-            <div><span>类别</span><strong>{report.class_distribution.length}</strong><small>已定义训练类别</small></div>
-            <div><span>已知尺寸</span><strong>{report.image_dimensions.known_asset_count}</strong><small>{report.image_dimensions.unknown_asset_count ? `${report.image_dimensions.unknown_asset_count} 个待补齐` : "全部已登记"}</small></div>
-          </div>
-          <div className="quality-detail-grid">
-            <section className="quality-detail-section">
-              <div className="quality-section-heading"><FileCheck2 size={14} /><strong>数据划分</strong></div>
-              <div className="quality-split-list">
-                {(["train", "valid", "test"] as const).map((split) => {
-                  const count = report.split_counts[split] ?? 0;
-                  const percentage = report.asset_count ? Math.round((count / report.asset_count) * 100) : 0;
-                  return <div key={split}><span>{splitLabels[split]}</span><strong>{count}</strong><small>{percentage}%</small><i aria-hidden="true"><b style={{ width: `${percentage}%` }} /></i></div>;
-                })}
-              </div>
-            </section>
-            <section className="quality-detail-section">
-              <div className="quality-section-heading"><ListChecks size={14} /><strong>类别分布</strong></div>
-              {report.class_distribution.length ? (
-                <div className="quality-class-list">{report.class_distribution.map((item) => <div key={item.class_id}><span>{item.class_name}</span><small>{item.asset_count} 个素材</small><strong>{item.annotation_count} 个标注</strong></div>)}</div>
-              ) : <p className="quality-empty">当前版本尚无类别分布。</p>}
-            </section>
-            <section className="quality-detail-section">
-              <div className="quality-section-heading"><FileImage size={14} /><strong>图像尺寸</strong></div>
-              <div className="quality-dimension-copy"><strong>{report.image_dimensions.min_width && report.image_dimensions.min_height ? `${report.image_dimensions.min_width} × ${report.image_dimensions.min_height} 至 ${report.image_dimensions.max_width} × ${report.image_dimensions.max_height}` : "暂无尺寸范围"}</strong><small>按已登记的原始图片尺寸计算。</small></div>
-            </section>
-          </div>
-          {report.advisories.length ? <div className="quality-advisories"><AlertCircle size={15} aria-hidden="true" /><div>{report.advisories.map((advisory) => <p key={advisory}>{advisory}</p>)}</div></div> : null}
-        </div>
-      )}
-    </article>
-  );
-}
-
-function DatasetSetupForm({
-  name,
-  onNameChange,
-  description,
-  onDescriptionChange,
-  taskType,
-  onTaskTypeChange,
-  sourceMode,
-  onSourceModeChange,
-  sourceFiles,
-  onFilesSelected,
-  onFilesDropped,
-  sourceUrl,
-  onSourceUrlChange,
-  onSubmit,
-  onCancel,
-  canCancel,
-  busy,
-}: {
-  name: string;
-  onNameChange: (value: string) => void;
-  description: string;
-  onDescriptionChange: (value: string) => void;
-  taskType: string;
-  onTaskTypeChange: (value: string) => void;
-  sourceMode: DatasetSourceMode;
-  onSourceModeChange: (value: DatasetSourceMode) => void;
-  sourceFiles: File[];
-  onFilesSelected: (event: ChangeEvent<HTMLInputElement>) => void;
-  onFilesDropped: (files: File[]) => void;
-  sourceUrl: string;
-  onSourceUrlChange: (value: string) => void;
-  onSubmit: (event: FormEvent) => Promise<void>;
-  onCancel: () => void;
-  canCancel: boolean;
-  busy: boolean;
-}) {
-  const sourceOptions: Array<{ id: DatasetSourceMode; label: string; icon: typeof UploadCloud }> = [
-    { id: "upload", label: "上传", icon: UploadCloud },
-    { id: "url", label: "URL", icon: Link2 },
-    { id: "cloud", label: "云端存储", icon: Cloud },
-    { id: "on-premise", label: "本地服务器", icon: HardDrive },
-  ];
-  const unavailableCopy: Record<Exclude<DatasetSourceMode, "upload">, { title: string; description: string }> = {
-    url: { title: "URL 导入待接入", description: "后端连接器上线后，可以从公开地址导入图像、视频和标注包。" },
-    cloud: { title: "云端存储连接待接入", description: "首期先使用本地上传；对象存储连接器会沿用同一套导入校验。" },
-    "on-premise": { title: "本地服务器连接待接入", description: "算力与存储服务器上线后，可在这里绑定内部数据源。" },
-  };
-
-  function handleDrop(event: DragEvent<HTMLLabelElement>) {
-    event.preventDefault();
-    if (sourceMode !== "upload" || busy) return;
-    onFilesDropped(Array.from(event.dataTransfer.files));
-  }
-
-  return (
-    <article className="panel setup-card dataset-create-surface">
-      <div className="dataset-create-header">
-        <span className="setup-icon"><Database size={19} /></span>
-        <div>
-          <span className="eyebrow">数据与标注</span>
-          <h2>新建数据集</h2>
-          <p>创建用于训练的图像、视频和标注数据集。</p>
-        </div>
-        {canCancel ? <button className="dataset-create-close" type="button" onClick={onCancel} aria-label="关闭新建数据集"><X size={16} /></button> : null}
-      </div>
-
-      <form onSubmit={(event) => void onSubmit(event)}>
-        <fieldset className="dataset-source-section">
-          <legend>数据源</legend>
-          <div className="dataset-source-tabs" role="tablist" aria-label="数据源类型">
-            {sourceOptions.map(({ id, label, icon: Icon }) => (
-              <button
-                type="button"
-                key={id}
-                className={`dataset-source-tab${sourceMode === id ? " is-active" : ""}`}
-                role="tab"
-                aria-selected={sourceMode === id}
-                onClick={() => onSourceModeChange(id)}
-                disabled={busy}
-              >
-                <Icon size={14} />
-                {label}
-              </button>
-            ))}
-          </div>
-
-          {sourceMode === "upload" ? (
-            <>
-              <label
-                className={`dataset-source-dropzone${sourceFiles.length ? " has-files" : ""}`}
-                htmlFor="dataset-source-file-input"
-                onDragOver={(event) => event.preventDefault()}
-                onDrop={handleDrop}
-              >
-                <input
-                  id="dataset-source-file-input"
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm"
-                  multiple
-                  onChange={onFilesSelected}
-                  disabled={busy}
-                />
-                <span className="dataset-source-dropzone-icon"><UploadCloud size={21} /></span>
-                <strong>{sourceFiles.length ? "继续添加素材" : "拖放图像或视频到这里"}</strong>
-                <small>或点击选择文件，支持 JPG、PNG、WebP、MP4、MOV 和 WebM；图片自动导入，视频会逐个配置抽帧</small>
-              </label>
-              {sourceFiles.length ? (
-                <div className="dataset-source-file-list" aria-live="polite">
-                  <div className="dataset-source-file-summary"><strong>已选择 {sourceFiles.length} 个文件</strong><span>创建后自动导入</span></div>
-                  {sourceFiles.slice(0, 4).map((file, index) => (
-                    <div className="dataset-source-file" key={`${file.name}-${file.lastModified}-${index}`}>
-                      {file.type.startsWith("video/") ? <Film size={14} /> : <FileImage size={14} />}
-                      <span>{file.name}</span>
-                      <small>{formatBytes(file.size)}</small>
-                    </div>
-                  ))}
-                  {sourceFiles.length > 4 ? <small className="dataset-source-more">还有 {sourceFiles.length - 4} 个文件将在创建后导入</small> : null}
-                </div>
-              ) : <p className="dataset-source-hint">也可以先创建空数据集，稍后在素材页继续导入。</p>}
-            </>
-          ) : (
-            <div className="dataset-source-unavailable">
-              <span className="dataset-source-unavailable-icon">{sourceMode === "url" ? <Globe2 size={18} /> : sourceMode === "cloud" ? <Cloud size={18} /> : <HardDrive size={18} />}</span>
-              <div><strong>{unavailableCopy[sourceMode].title}</strong><p>{unavailableCopy[sourceMode].description}</p></div>
-              {sourceMode === "url" ? <input value={sourceUrl} onChange={(event) => onSourceUrlChange(event.target.value)} placeholder="https://example.com/dataset.zip" disabled={busy} aria-label="数据集 URL" /> : null}
-            </div>
-          )}
-        </fieldset>
-
-        <div className="dataset-create-fields">
-          <label className="dataset-create-field">
-            <span>数据集名称</span>
-            <input value={name} onChange={(event) => onNameChange(event.target.value)} placeholder="例如：道路病害巡检" required />
-            <small>名称用于工作区内识别数据集。</small>
-          </label>
-          <div className="dataset-create-field">
-            <span>标识预览</span>
-            <div className="dataset-create-slug"><Link2 size={13} /><code>{slugify(name) || "dataset"}</code></div>
-            <small>由名称生成，当前仅作为可读预览。</small>
-          </div>
-        </div>
-        <label className="dataset-create-field">
-          <span>描述 <em>可选</em></span>
-          <textarea value={description} onChange={(event) => onDescriptionChange(event.target.value)} placeholder="补充数据来源、采集范围或使用限制" rows={3} maxLength={500} />
-        </label>
-
-        <fieldset className="dataset-setup-task-types">
-          <legend>任务类型与标注结构</legend>
-          <p className="dataset-create-section-hint">创建后仍可调整；一旦开始标注或生成版本，任务类型将被锁定。</p>
-          <TaskTypePicker value={taskType} onChange={onTaskTypeChange} disabled={busy} />
-        </fieldset>
-
-        <div className="dataset-create-footer">
-          {canCancel ? <button className="secondary-button" type="button" onClick={onCancel}>取消</button> : <span />}
-          <button className="primary-button" type="submit" disabled={busy || sourceMode !== "upload"}>
-            {busy ? <LoaderCircle size={14} className="spinner" /> : <Plus size={14} />}
-            {busy ? "正在创建" : "创建数据集"}
-          </button>
-        </div>
-        {sourceMode !== "upload" ? <p className="dataset-create-footer-note">切换回“上传”后即可创建；其他数据源会在连接器上线后开放。</p> : null}
-      </form>
-    </article>
-  );
-}
-
-function ProjectSetupForm({
-  name,
-  onNameChange,
-  slug,
-  onSlugChange,
-  description,
-  onDescriptionChange,
-  taskType,
-  onTaskTypeChange,
-  modelFile,
-  onModelFileChange,
-  onSubmit,
-  busy,
-}: {
-  name: string;
-  onNameChange: (value: string) => void;
-  slug: string;
-  onSlugChange: (value: string) => void;
-  description: string;
-  onDescriptionChange: (value: string) => void;
-  taskType: string;
-  onTaskTypeChange: (value: string) => void;
-  modelFile: File | null;
-  onModelFileChange: (file: File | null) => void;
-  onSubmit: (event: FormEvent) => Promise<void>;
-  busy: boolean;
-}) {
-  return (
-    <article className="panel setup-card project-create-surface">
-      <div className="project-create-header">
-        <div>
-          <span className="eyebrow">工作台项目</span>
-          <h2>创建视觉项目</h2>
-          <p>项目用于组织数据集、训练实验和已发布的视觉能力。</p>
-        </div>
-      </div>
-
-      <form onSubmit={(event) => void onSubmit(event)}>
-        <label
-          className="project-model-dropzone"
-          htmlFor="project-model-input"
-          onDragOver={(event) => event.preventDefault()}
-          onDrop={(event) => {
-            event.preventDefault();
-            onModelFileChange(event.dataTransfer.files?.[0] ?? null);
-          }}
-        >
-          <input
-            id="project-model-input"
-            type="file"
-            accept=".pt,.onnx,application/octet-stream"
-            onChange={(event) => onModelFileChange(event.target.files?.[0] ?? null)}
-            disabled={busy}
-          />
-          <span className="project-model-dropzone-icon"><UploadCloud size={22} /></span>
-          <strong>{modelFile ? modelFile.name : "拖放模型文件到这里"}</strong>
-          <small>{modelFile ? "模型文件已选择；模型上传接口接入后可继续导入" : "可选，支持 .pt 和 .onnx；也可以先创建空项目"}</small>
-        </label>
-
-        <div className="project-create-fields">
-          <label className="dataset-create-field">
-            <span>项目名称</span>
-            <input value={name} onChange={(event) => onNameChange(event.target.value)} placeholder="例如：道路病害识别" required />
-          </label>
-          <label className="dataset-create-field">
-            <span>项目 URL</span>
-            <div className="project-slug-input"><span>/</span><input value={slug} onChange={(event) => onSlugChange(event.target.value)} placeholder="road-defects" required /></div>
-            <small>仅支持小写字母、数字和连字符。</small>
-          </label>
-        </div>
-
-        <label className="dataset-create-field">
-          <span>项目描述 <em>可选</em></span>
-          <textarea value={description} onChange={(event) => onDescriptionChange(event.target.value)} placeholder="说明项目目标、数据范围或协作边界" rows={3} maxLength={2_000} />
-        </label>
-
-        <fieldset className="project-task-types">
-          <legend>默认任务类型</legend>
-          <p className="dataset-create-section-hint">创建数据集时仍可选择更具体的标注结构。</p>
-          <div className="project-task-type-grid">
-            {projectTaskTypes.map((item) => (
-              <button
-                type="button"
-                key={item.id}
-                className={taskType === item.id ? "is-active" : ""}
-                aria-pressed={taskType === item.id}
-                onClick={() => onTaskTypeChange(item.id)}
-                disabled={busy}
-              >
-                <TaskTypeIcon taskType={item.id} size={15} />
-                <span>{item.label}</span>
-              </button>
-            ))}
-          </div>
-        </fieldset>
-
-        <div className="project-create-footer">
-          <span>项目创建后可继续添加数据集和协作者。</span>
-          <button className="primary-button" type="submit" disabled={busy}>
-            {busy ? <LoaderCircle size={14} className="spinner" /> : <Plus size={14} />}
-            {busy ? "正在创建" : "创建项目"}
-          </button>
-        </div>
-      </form>
-    </article>
-  );
-}
-
-function SetupForm({
-  eyebrow,
-  title,
-  description,
-  label,
-  value,
-  onChange,
-  onSubmit,
-  busy,
-}: {
-  eyebrow: string;
-  title: string;
-  description: string;
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  onSubmit: (event: FormEvent) => Promise<void>;
-  busy: boolean;
-}) {
-  return (
-    <article className="panel setup-card">
-      <span className="setup-icon"><Database size={19} /></span>
-      <span className="eyebrow">{eyebrow}</span>
-      <h2>{title}</h2>
-      <p>{description}</p>
-      <form onSubmit={(event) => void onSubmit(event)}>
-        <label>
-          <span>{label}</span>
-          <input value={value} onChange={(event) => onChange(event.target.value)} required />
-        </label>
-        <button className="primary-button" type="submit" disabled={busy}>
-          {busy ? <LoaderCircle size={14} className="spinner" /> : <Plus size={14} />}
-          创建并继续
-        </button>
-      </form>
-    </article>
   );
 }

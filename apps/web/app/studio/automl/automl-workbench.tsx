@@ -4,15 +4,19 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   BookmarkPlus,
   Database,
+  FileImage,
   FolderOpen,
   ListChecks,
   LoaderCircle,
+  PenLine,
   RefreshCw,
   Tags,
   Upload,
 } from "lucide-react";
+import Link from "next/link";
 import {
   AutomlAlgorithmDetail,
+  AutomlAlgorithmSearchItem,
   AutomlAnnotationTaskSummary,
   AutomlAnnotation,
   AutomlDatasetClass,
@@ -43,12 +47,14 @@ import {
   listAutomlDatasetMaterials,
   listAutomlDatasetModels,
   saveAutomlAnnotations,
+  setAutomlDataApiToken,
   uploadAutomlFiles,
   uploadAutomlFileChunked,
   searchAutomlAlgorithms,
   updateAutomlDatasetClass,
   updateAutomlDatasetItemSplits,
 } from "../../../lib/automl-data-api";
+import { DynamicAssetImage } from "../../components/dynamic-asset-image";
 
 const TASK_TYPES = [
   { value: "OBJECT_DETECTION", label: "目标检测" },
@@ -81,6 +87,7 @@ export function AutomlWorkbench() {
   const [datasetName, setDatasetName] = useState("");
   const [datasetTaskType, setDatasetTaskType] = useState("OBJECT_DETECTION");
   const [datasetDescription, setDatasetDescription] = useState("");
+  const [datasetClassNamesDraft, setDatasetClassNamesDraft] = useState("");
   const [creatingDataset, setCreatingDataset] = useState(false);
   const [createdDataset, setCreatedDataset] = useState<AutomlDatasetCreated | null>(null);
   const [inspectorDatasetId, setInspectorDatasetId] = useState("");
@@ -104,15 +111,19 @@ export function AutomlWorkbench() {
   const [statusLoading, setStatusLoading] = useState(false);
   const [backendStatus, setBackendStatus] = useState<"checking" | "online" | "offline">("checking");
   const [algorithmTotal, setAlgorithmTotal] = useState<AutomlId | null>(null);
-  const [algorithmIdInput, setAlgorithmIdInput] = useState("");
+  const [tokenInput, setTokenInput] = useState("");
+  const [tokenApplied, setTokenApplied] = useState(false);
+  const [algorithmQueryName, setAlgorithmQueryName] = useState("");
+  const [algorithmRows, setAlgorithmRows] = useState<AutomlAlgorithmSearchItem[] | null>(null);
+  const [algorithmSearchLoading, setAlgorithmSearchLoading] = useState(false);
   const [algorithmDetail, setAlgorithmDetail] = useState<AutomlAlgorithmDetail | null>(null);
   const [algorithmLoading, setAlgorithmLoading] = useState(false);
   const [fileUrls, setFileUrls] = useState<AutomlFileUrl[] | null>(null);
   const [datasetQuery, setDatasetQuery] = useState({ name: "", taskType: "", statusCd: "", page: 1 });
   const [datasets, setDatasets] = useState<AutomlDataset[] | null>(null);
-  const [datasetTotal, setDatasetTotal] = useState<AutomlId | null>(null);
   const [datasetListLoading, setDatasetListLoading] = useState(false);
   const [items, setItems] = useState<AutomlDatasetItem[] | null>(null);
+  const [itemUrls, setItemUrls] = useState<Record<string, string>>({});
   const [itemTotal, setItemTotal] = useState<AutomlId | null>(null);
   const [itemsLoading, setItemsLoading] = useState(false);
   const [itemPage, setItemPage] = useState(1);
@@ -191,6 +202,38 @@ export function AutomlWorkbench() {
       setError(reason instanceof Error ? reason.message : "操作失败，请稍后重试");
     }
   }, []);
+
+  const applyToken = useCallback(() => {
+    setAutomlDataApiToken(tokenInput.trim() || null);
+    setTokenApplied(Boolean(tokenInput.trim()));
+    if (!tokenInput.trim()) {
+      setNotice("已清空令牌");
+      return;
+    }
+    void run(async () => {
+      const result = await searchAutomlAlgorithms({ limit: 1 });
+      setBackendStatus("online");
+      setAlgorithmTotal(result.total);
+      return "令牌已注入并重新校验连接";
+    });
+  }, [run, tokenInput]);
+
+  const searchAlgorithmRows = useCallback(() => {
+    void run(async () => {
+      setAlgorithmSearchLoading(true);
+      try {
+        const result = await searchAutomlAlgorithms({
+          name: algorithmQueryName.trim() || undefined,
+          limit: 10,
+        });
+        setAlgorithmRows(result.rows);
+        setAlgorithmTotal(result.total);
+        return `算法库共 ${result.total} 个，当前显示 ${result.rows.length} 个`;
+      } finally {
+        setAlgorithmSearchLoading(false);
+      }
+    });
+  }, [algorithmQueryName, run]);
 
   const handleUpload = useCallback((files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -271,11 +314,16 @@ export function AutomlWorkbench() {
     void run(async () => {
       setCreatingDataset(true);
       try {
+        const classNames = datasetClassNamesDraft
+          .split(/[\n,，]/)
+          .map((entry) => entry.trim())
+          .filter(Boolean);
         const dataset = await createAutomlDatasetFromFiles({
           dataFileIds: selectedFileIds,
           name: datasetName.trim(),
           description: datasetDescription.trim() || undefined,
           taskType: datasetTaskType,
+          classNames: classNames.length ? classNames : undefined,
         });
         setCreatedDataset(dataset);
         setInspectorDatasetId(String(dataset.id));
@@ -292,7 +340,7 @@ export function AutomlWorkbench() {
         setCreatingDataset(false);
       }
     });
-  }, [datasetDescription, datasetName, datasetTaskType, persistContext, run, selectedFileIds]);
+  }, [datasetClassNamesDraft, datasetDescription, datasetName, datasetTaskType, persistContext, run, selectedFileIds]);
 
   const loadInspectorTab = useCallback((tab: InspectorTab, datasetId: string) => {
     void run(async () => {
@@ -351,22 +399,6 @@ export function AutomlWorkbench() {
     });
   }, [inspectorId, run, taskMethod, taskName, versionIdInput]);
 
-  const loadAlgorithmDetail = useCallback(() => {
-    const id = algorithmIdInput.trim();
-    if (!id) {
-      setError("请填写算法 ID");
-      return;
-    }
-    void run(async () => {
-      setAlgorithmLoading(true);
-      try {
-        setAlgorithmDetail(await getAutomlAlgorithmDetail(id));
-      } finally {
-        setAlgorithmLoading(false);
-      }
-    });
-  }, [algorithmIdInput, run]);
-
   const loadFileUrls = useCallback(() => {
     const objectKeys = uploadedFiles.filter((file) => selectedFileIds.includes(file.fileId)).map((file) => file.objectKey);
     if (objectKeys.length === 0) {
@@ -384,7 +416,6 @@ export function AutomlWorkbench() {
       try {
         const result = await listAutomlDatasets({ ...datasetQuery, page });
         setDatasets(result.rows);
-        setDatasetTotal(result.total);
         setDatasetQuery((current) => ({ ...current, page }));
       } finally {
         setDatasetListLoading(false);
@@ -407,6 +438,18 @@ export function AutomlWorkbench() {
         setItems(result.rows);
         setItemTotal(result.total);
         setItemPage(page);
+        const objectKeys = result.rows.map((row) => row.sampleObjectKey).filter(Boolean);
+        if (objectKeys.length) {
+          try {
+            const urls = await getAutomlFileUrls(objectKeys);
+            setItemUrls(Object.fromEntries(urls.map((entry) => [entry.objectKey, entry.url])));
+          } catch {
+            // 缩略图获取失败不阻断样本列表，仅退化为占位图标。
+            setItemUrls({});
+          }
+        } else {
+          setItemUrls({});
+        }
       } finally {
         setItemsLoading(false);
       }
@@ -460,7 +503,7 @@ export function AutomlWorkbench() {
         setClassSaving(false);
       }
     });
-  }, [classForm, inspectorDatasetId, run, selectedClassId]);
+  }, [classForm, classes, inspectorDatasetId, run, selectedClassId]);
 
   const handleDeleteClass = useCallback((classId: AutomlId) => {
     const datasetId = inspectorDatasetId.trim();
@@ -548,6 +591,27 @@ export function AutomlWorkbench() {
               ? `sz-boot 后端已连接 · 算法库 ${algorithmTotal} 个 · 接口前缀 /sz-api/automl`
               : "无法连接 sz-boot 后端（127.0.0.1:9992），请确认服务已启动"}
         </div>
+        <div className="automl-subpanel">
+          <h3>后端访问令牌</h3>
+          <div className="automl-actions">
+            <input
+              className="automl-inline-input"
+              type="password"
+              value={tokenInput}
+              onChange={(event) => setTokenInput(event.target.value)}
+              placeholder="粘贴 Bruno「AutoML 登录」返回的 accessToken"
+              aria-label="后端访问令牌"
+            />
+            <button className="secondary-button" type="button" onClick={applyToken}>
+              {tokenApplied ? "重新注入" : "注入令牌"}
+            </button>
+          </div>
+          <p className="automl-panel-hint">
+            {tokenApplied
+              ? "令牌已注入页面内存（不写入浏览器存储），刷新页面后需重新注入。"
+              : "当前后端已将 /automl/** 加入白名单，可不注入令牌直接联调；恢复鉴权后再用 Bruno「AutoML 登录」取 accessToken 粘贴到这里。"}
+          </p>
+        </div>
         {error ? (
           <div className="workbench-message error-message" role="alert">
             <span>{error}</span>
@@ -565,27 +629,66 @@ export function AutomlWorkbench() {
           <header className="automl-panel-header">
             <span className="dataset-object-mark"><FolderOpen size={20} strokeWidth={1.6} aria-hidden="true" /></span>
             <div>
-              <h2>1 · 算法详情</h2>
-              <p className="automl-panel-hint">校验算法库连通性，并读取算法元信息、指标与输入输出 Schema。</p>
+              <h2>1 · 算法库</h2>
+              <p className="automl-panel-hint">按名称模糊搜索算法，点击「详情」读取元信息、训练指标与输入输出 Schema。</p>
             </div>
           </header>
           <div className="automl-actions">
             <input
               className="automl-inline-input"
-              value={algorithmIdInput}
-              onChange={(event) => setAlgorithmIdInput(event.target.value)}
-              placeholder="算法 ID，如 930001"
+              value={algorithmQueryName}
+              onChange={(event) => setAlgorithmQueryName(event.target.value)}
+              placeholder="算法名称，如：安全帽"
+              aria-label="算法名称搜索"
             />
-            <button className="secondary-button" type="button" disabled={algorithmLoading || !algorithmIdInput.trim()} onClick={loadAlgorithmDetail}>
-              {algorithmLoading ? <LoaderCircle size={16} className="spinner" /> : <RefreshCw size={16} />}
-              查询详情
+            <button className="secondary-button" type="button" disabled={algorithmSearchLoading} onClick={searchAlgorithmRows}>
+              {algorithmSearchLoading ? <LoaderCircle size={16} className="spinner" /> : <RefreshCw size={16} />}
+              搜索算法
             </button>
+            <span className="automl-panel-hint">算法库共 {algorithmTotal ?? "-"} 个</span>
           </div>
+          {algorithmRows ? (
+            algorithmRows.length > 0 ? (
+              <table className="automl-table">
+                <thead><tr><th>ID</th><th>名称</th><th>类型</th><th>场景</th><th>描述</th><th>操作</th></tr></thead>
+                <tbody>
+                  {algorithmRows.map((row) => (
+                    <tr key={row.id}>
+                      <td>{row.id}</td>
+                      <td>{row.model_name}</td>
+                      <td>{row.model_type ?? "-"}</td>
+                      <td>{row.model_scene ?? "-"}</td>
+                      <td title={row.model_description ?? undefined}>{row.model_description ?? "-"}</td>
+                      <td>
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          disabled={algorithmLoading}
+                          onClick={() => {
+                            void run(async () => {
+                              setAlgorithmLoading(true);
+                              try {
+                                setAlgorithmDetail(await getAutomlAlgorithmDetail(row.id));
+                              } finally {
+                                setAlgorithmLoading(false);
+                              }
+                            });
+                          }}
+                        >
+                          详情
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : <p className="automl-panel-hint">没有匹配的算法。</p>
+          ) : (
+            <p className="automl-panel-hint">页面加载时已按空条件探测连通性；输入名称后点击搜索查看列表。</p>
+          )}
           {algorithmDetail ? (
             <pre className="automl-panel-hint">{JSON.stringify(algorithmDetail, null, 2)}</pre>
-          ) : (
-            <p className="automl-panel-hint">页面加载已自动调用算法搜索；输入 ID 可单独验证算法详情。</p>
-          )}
+          ) : null}
         </article>
 
         <article className="panel automl-panel">
@@ -734,6 +837,15 @@ export function AutomlWorkbench() {
             <label className="automl-field automl-field-wide">
               <span>描述（可选）</span>
               <input value={datasetDescription} onChange={(event) => setDatasetDescription(event.target.value)} placeholder="数据集说明" />
+            </label>
+            <label className="automl-field automl-field-wide">
+              <span>初始类别（可选，逗号或换行分隔）</span>
+              <textarea
+                rows={2}
+                value={datasetClassNamesDraft}
+                onChange={(event) => setDatasetClassNamesDraft(event.target.value)}
+                placeholder="如：helmet, person"
+              />
             </label>
           </div>
           <div className="automl-actions">
@@ -896,23 +1008,43 @@ export function AutomlWorkbench() {
               items.length > 0 ? (
                 <>
                   <table className="automl-table">
-                    <thead><tr><th>样本</th><th>划分</th><th>标注数</th><th>状态</th><th>操作</th></tr></thead>
+                    <thead><tr><th>预览</th><th>样本</th><th>划分</th><th>标注数</th><th>状态</th><th>操作</th></tr></thead>
                     <tbody>
-                      {items.map((item) => (
-                        <tr key={item.itemId}>
-                          <td>{item.originName ?? item.sampleObjectKey}</td>
-                          <td>
-                            <select defaultValue={item.splitType} onChange={(event) => handleUpdateSplit(item.itemId, event.target.value)}>
-                              <option value="train">train</option>
-                              <option value="val">val</option>
-                              <option value="test">test</option>
-                            </select>
-                          </td>
-                          <td>{item.annotatedItemCount}</td>
-                          <td>{item.statusCd}</td>
-                          <td><button className="secondary-button" type="button" onClick={() => loadAnnotations(item.itemId)}>标注</button></td>
-                        </tr>
-                      ))}
+                      {items.map((item) => {
+                        const thumbUrl = itemUrls[item.sampleObjectKey];
+                        const annotateHref = `/studio/automl/annotate?dataset=${encodeURIComponent(inspectorDatasetId.trim())}&version=${encodeURIComponent(versionIdInput.trim())}&item=${encodeURIComponent(String(item.itemId))}&from=automl`;
+                        return (
+                          <tr key={item.itemId}>
+                            <td>
+                              {thumbUrl ? (
+                                <DynamicAssetImage
+                                  src={thumbUrl}
+                                  alt={item.originName ?? "样本预览"}
+                                  style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 6, display: "block" }}
+                                />
+                              ) : (
+                                <FileImage size={18} aria-hidden="true" />
+                              )}
+                            </td>
+                            <td title={item.sampleObjectKey}>{item.originName ?? item.sampleObjectKey}</td>
+                            <td>
+                              <select defaultValue={item.splitType} onChange={(event) => handleUpdateSplit(item.itemId, event.target.value)}>
+                                <option value="train">train</option>
+                                <option value="val">val</option>
+                                <option value="test">test</option>
+                              </select>
+                            </td>
+                            <td>{item.annotatedItemCount}</td>
+                            <td>{item.statusCd}</td>
+                            <td>
+                              <div className="automl-actions">
+                                <Link className="secondary-button" href={annotateHref}><PenLine size={13} />可视化标注</Link>
+                                <button className="secondary-button" type="button" onClick={() => loadAnnotations(item.itemId)}>JSON</button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                   <div className="automl-actions">
@@ -1053,6 +1185,13 @@ export function AutomlWorkbench() {
                 {annotationSaving ? <LoaderCircle size={16} className="spinner" /> : <BookmarkPlus size={16} />}
                 全量覆盖保存
               </button>
+              <Link
+                className="secondary-button"
+                href={`/studio/automl/annotate?dataset=${encodeURIComponent(inspectorDatasetId.trim())}&version=${encodeURIComponent(versionIdInput.trim())}${annotationTaskIdInput.trim() ? `&task=${encodeURIComponent(annotationTaskIdInput.trim())}` : ""}&from=automl`}
+              >
+                <PenLine size={16} />
+                打开可视化标注
+              </Link>
             </div>
             <textarea
               className="automl-annotation-json"

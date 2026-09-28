@@ -24,7 +24,10 @@ const taskTypeLabels: Record<string, string> = {
 };
 
 export function ProjectChrome({ active }: { active: ProjectView }) {
-  const requestedProjectId = useSearchParams().get("project");
+  const searchParams = useSearchParams();
+  const requestedProjectId = searchParams.get("project");
+  // 「新建训练」专注模式（compose=1）：页头按钮隐藏，页面只保留新建训练卡片
+  const composing = active === "training" && searchParams.get("compose") === "1";
   const [project, setProject] = useState<Project | null>(null);
 
   useEffect(() => {
@@ -41,11 +44,10 @@ export function ProjectChrome({ active }: { active: ProjectView }) {
   const projectId = project?.id ?? requestedProjectId;
   const projectName = project?.name ?? "项目详情";
   const paused = project?.status === "paused";
-  const newTrainingHref = active === "training"
-    ? "#new-training"
-    : projectId
-      ? `/studio/training?project=${projectId}`
-      : "/studio/training";
+  // 头部按钮始终指向训练页签的新建训练表单，在模型页签下点击会切回训练页签
+  const newTrainingHref = projectId
+    ? `/studio/training?project=${projectId}&compose=1#new-training`
+    : "/studio/training?compose=1#new-training";
 
   return (
     <div className="project-chrome">
@@ -57,6 +59,7 @@ export function ProjectChrome({ active }: { active: ProjectView }) {
         <span>{projectName}</span>
       </div>
 
+      {!composing ? (
       <header className="project-header">
         <div className="project-identity">
           <span className="project-mark">{project ? project.name.slice(0, 2).toUpperCase() : "—"}</span>
@@ -75,11 +78,14 @@ export function ProjectChrome({ active }: { active: ProjectView }) {
           </div>
         </div>
         <div className="project-actions">
-          <Link className="primary-button" href={newTrainingHref}>
-            <Play size={14} fill="currentColor" aria-hidden="true" />新建训练
-          </Link>
+          {!composing ? (
+            <Link className="primary-button" href={newTrainingHref}>
+              <Play size={14} fill="currentColor" aria-hidden="true" />新建训练
+            </Link>
+          ) : null}
         </div>
       </header>
+      ) : null}
     </div>
   );
 }

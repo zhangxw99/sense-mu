@@ -586,7 +586,7 @@ export function TrainingArtifactDetail({ artifactId, kind }: ArtifactDetailProps
           <p>这是一份由训练任务生成的不可变模型版本。需要复现时，请从原训练任务复制配置。</p>
           <div className="model-detail-action-row">
             {relatedRun ? <Link className="secondary-button" href={`/studio/training/runs/${relatedRun.id}${projectQuery}`}>查看训练任务<ArrowUpRight size={13} /></Link> : null}
-            <Link className="primary-button" href={`${trainingHref}#new-training`}>复制配置重新训练<FlaskConical size={13} /></Link>
+            <Link className="primary-button" href={`${trainingHref}&compose=1#new-training`}>复制配置重新训练<FlaskConical size={13} /></Link>
           </div>
         </article>
       ) : null}

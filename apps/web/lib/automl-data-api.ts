@@ -5,8 +5,22 @@ const AUTOML_CHUNK_RATE_LIMIT_DELAY_MS = 1_200;
 
 let storedToken: string | null = null;
 
+export const AUTOML_TOKEN_CHANGED_EVENT = "sensemu:automl-token-changed";
+
+export const AUTOML_DATASETS_CHANGED_EVENT = "sensemu:automl-datasets-changed";
+
+// 数据集增删后由页面调用，通知侧栏等处的数据集列表刷新
+export function notifyAutomlDatasetsChanged(): void {
+  if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+    window.dispatchEvent(new Event(AUTOML_DATASETS_CHANGED_EVENT));
+  }
+}
+
 export function setAutomlDataApiToken(token: string | null): void {
   storedToken = token?.trim() || null;
+  if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+    window.dispatchEvent(new Event(AUTOML_TOKEN_CHANGED_EVENT));
+  }
 }
 
 export type AutomlApiEnvelope<T> = {
@@ -93,7 +107,7 @@ export type AutomlDatasetItem = {
   height: number | null;
   sizeBytes: AutomlId | null;
   statusCd: string;
-  annotatedItemCount: number;
+  annotatedItemCount: number | string;
 };
 
 export type AutomlDatasetClass = {
@@ -165,6 +179,7 @@ export type AutomlVersionDetail = {
     version: string;
     parentVersionId: number | null;
     statusCd: string;
+    marketStatusCd?: string;
     sampleCount: number;
     imageCount: number;
     releasedAt: string | null;
@@ -180,10 +195,11 @@ export type AutomlVersionDetail = {
 };
 
 export type AutomlAnnotationTaskSummary = {
+  id: AutomlId;
   name: string;
   method: string;
   totalItemCount: number;
-  annotatedItemCount: number;
+  annotatedItemCount: number | string;
   statusCd: string;
 };
 
@@ -198,7 +214,7 @@ export type AutomlAnnotationTask = {
   priority: string;
   labelSchemaJson: { classNames?: string[] } | null;
   totalItemCount: number;
-  annotatedItemCount: number;
+  annotatedItemCount: number | string;
   reviewedItemCount: number;
   rejectedItemCount: number;
   createTime: string;
@@ -302,6 +318,15 @@ async function fetchAutoml<T>(
     window.clearTimeout(timeoutId);
   }
   if (!response.ok) {
+    // 后端业务错误（如 C1008 校验失败）以 HTTP 4xx/5xx + JSON envelope 返回，
+    // 优先透出 envelope 里的后端 message，而不是通用的「请求失败 (状态码)」
+    const errorPayload = await response.json().catch(() => null) as AutomlApiEnvelope<unknown> | null;
+    if (errorPayload?.message) {
+      throw new AutomlDataApiError(errorPayload.message, {
+        status: response.status,
+        code: errorPayload.code ?? "request_failed",
+      });
+    }
     throw new AutomlDataApiError(`AutoML 接口请求失败 (${response.status})`, {
       status: response.status,
       code: "request_failed",
@@ -457,8 +482,18 @@ export async function createAutomlDatasetFromFiles(input: {
   name: string;
   description?: string;
   taskType: string;
+  classNames?: string[];
 }): Promise<AutomlDatasetCreated> {
   return fetchAutoml<AutomlDatasetCreated>("/datasets/from-files", jsonInit("POST", input));
+}
+
+export async function createAutomlEmptyDataset(input: {
+  name: string;
+  description?: string;
+  taskType: string;
+  classNames?: string[];
+}): Promise<AutomlDatasetCreated> {
+  return fetchAutoml<AutomlDatasetCreated>("/datasets", jsonInit("POST", input));
 }
 
 export async function listAutomlDatasets(
@@ -490,6 +525,7 @@ export async function listAutomlDatasetItems(
     splitType?: string;
     statusCd?: string;
     annotated?: boolean;
+    labelName?: string;
   } = {},
 ): Promise<AutomlPage<AutomlDatasetItem>> {
   const query = new URLSearchParams({
@@ -499,6 +535,7 @@ export async function listAutomlDatasetItems(
   if (params.splitType?.trim()) query.set("splitType", params.splitType.trim());
   if (params.statusCd?.trim()) query.set("statusCd", params.statusCd.trim());
   if (params.annotated != null) query.set("annotated", String(params.annotated));
+  if (params.labelName?.trim()) query.set("labelName", params.labelName.trim());
   return fetchAutoml<AutomlPage<AutomlDatasetItem>>(
     `/datasets/${encodeURIComponent(String(datasetId))}/versions/${encodeURIComponent(String(datasetVersionId))}/items?${query.toString()}`,
   );
@@ -512,6 +549,71 @@ export async function updateAutomlDatasetItemSplits(
   return fetchAutoml<AutomlSplitCount[]>(
     `/datasets/${encodeURIComponent(String(datasetId))}/versions/${encodeURIComponent(String(datasetVersionId))}/items/splits`,
     jsonInit("PUT", { items }),
+  );
+}
+
+export type AutomlVersionSnapshot = {
+  id: AutomlId;
+  datasetId: AutomlId;
+  version: string;
+  parentVersionId: AutomlId | null;
+  statusCd: string;
+  itemCount: number;
+  annotationCount: number;
+  sizeBytes: AutomlId | null;
+};
+
+export async function createAutomlDatasetVersionSnapshot(
+  datasetId: number | string,
+  sourceVersionId?: AutomlId,
+): Promise<AutomlVersionSnapshot> {
+  const body = sourceVersionId != null ? { sourceVersionId } : {};
+  return fetchAutoml<AutomlVersionSnapshot>(
+    `/datasets/${encodeURIComponent(String(datasetId))}/versions`,
+    jsonInit("POST", body),
+  );
+}
+
+export async function releaseAutomlDatasetVersion(
+  datasetId: number | string,
+  datasetVersionId: AutomlId,
+): Promise<void> {
+  return fetchAutoml<void>(
+    `/datasets/${encodeURIComponent(String(datasetId))}/versions/${encodeURIComponent(String(datasetVersionId))}/release`,
+    { method: "PUT" },
+  );
+}
+
+export async function deleteAutomlDataset(datasetId: number | string): Promise<void> {
+  return fetchAutoml<void>(`/datasets/${encodeURIComponent(String(datasetId))}`, { method: "DELETE" });
+}
+
+export type AutomlImportItemPayload = {
+  dataFileId: AutomlId;
+  width?: number | null;
+  height?: number | null;
+  annotations: { labelName: string; annotationJson: Record<string, unknown> }[];
+};
+
+// 结构化导入：图片已上传，标注由前端从 YOLO txt / VOC xml 解析后随请求提交；
+// 缺失类别后端自动创建，标注不归属标注任务
+export async function importAutomlItems(
+  datasetId: number | string,
+  items: AutomlImportItemPayload[],
+): Promise<AutomlVersionSnapshot> {
+  return fetchAutoml<AutomlVersionSnapshot>(
+    `/datasets/${encodeURIComponent(String(datasetId))}/import-items`,
+    jsonInit("POST", { items }),
+  );
+}
+
+export async function appendAutomlDatasetFiles(
+  datasetId: number | string,
+  dataFileIds: AutomlId[],
+): Promise<AutomlVersionSnapshot> {
+  return fetchAutoml<AutomlVersionSnapshot>(
+    `/datasets/${encodeURIComponent(String(datasetId))}/files`,
+    jsonInit("POST", { dataFileIds }),
   );
 }
 
@@ -538,7 +640,8 @@ export async function createAutomlDatasetClass(
     remark?: string;
   },
 ): Promise<void> {
-  return fetchAutoml<void>(`/datasets/${encodeURIComponent(String(datasetId))}/classes`, jsonInit("POST", input));
+  // CreateDTO 的 datasetId 为 @NotNull 且 @Valid 先于 Controller 回填执行，body 必须显式携带
+  return fetchAutoml<void>(`/datasets/${encodeURIComponent(String(datasetId))}/classes`, jsonInit("POST", { ...input, datasetId }));
 }
 
 export async function updateAutomlDatasetClass(
@@ -570,6 +673,42 @@ export async function deleteAutomlDatasetClass(datasetId: number | string, class
 
 export async function getAutomlDatasetVersionDetails(datasetId: number | string): Promise<AutomlVersionDetail> {
   return fetchAutoml<AutomlVersionDetail>(`/datasets/${encodeURIComponent(String(datasetId))}/version-details`);
+}
+
+export type AutomlMarketListing = {
+  versionId: AutomlId;
+  datasetId: AutomlId;
+  datasetName: string;
+  description: string | null;
+  taskType: string;
+  version: string;
+  marketStatusCd: string;
+  sampleCount: number;
+  annotationCount: number;
+  annotatedSampleCount: number;
+  classNames: string[] | null;
+  releasedAt: string | null;
+  createTime: string;
+  coverObjectKey?: string;
+  coverBoxes?: { labelName: string; x: number; y: number; w: number; h: number }[];
+};
+
+export async function listAutomlMarketListings(): Promise<AutomlMarketListing[]> {
+  return fetchAutoml<AutomlMarketListing[]>("/market/listings");
+}
+
+export async function publishAutomlVersionToMarket(datasetId: number | string, versionId: AutomlId): Promise<void> {
+  await fetchAutoml<null>(
+    `/datasets/${encodeURIComponent(String(datasetId))}/versions/${encodeURIComponent(String(versionId))}/market/publish`,
+    { method: "POST" },
+  );
+}
+
+export async function unpublishAutomlVersionFromMarket(datasetId: number | string, versionId: AutomlId): Promise<void> {
+  await fetchAutoml<null>(
+    `/datasets/${encodeURIComponent(String(datasetId))}/versions/${encodeURIComponent(String(versionId))}/market/unpublish`,
+    { method: "POST" },
+  );
 }
 
 export async function listAutomlAnnotationTasks(

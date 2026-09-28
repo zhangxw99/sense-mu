@@ -3,9 +3,10 @@
 import { ArrowLeft, BadgeCheck, Check, LoaderCircle, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { dataTaskLabels, getDatasetListingCounts, licenseLabels } from "../data-market-workbench";
+import { dataTaskLabels, getDatasetListingCounts, licenseLabels, toMarketListing } from "../data-market-workbench";
 import { decorateDataListing, findMockData, type DataCatalogItem } from "../../../lib/catalog-mock-data";
 import { catalogApi } from "../../../lib/catalog-api";
+import { listAutomlMarketListings } from "../../../lib/automl-data-api";
 import { CatalogZoomPreview } from "../../components/catalog-zoom-preview";
 
 export function DataDetailWorkbench({ listingId, previewMode }: { listingId: string; previewMode: boolean }) {
@@ -16,6 +17,17 @@ export function DataDetailWorkbench({ listingId, previewMode }: { listingId: str
 
   useEffect(() => {
     if (initialListing) return;
+    // AutoML 上架数据：listingId 形如 automl-{versionId}，从 automl 市场接口解析
+    if (listingId.startsWith("automl-")) {
+      void listAutomlMarketListings()
+        .then((entries) => {
+          const entry = entries.find((candidate) => `automl-${candidate.versionId}` === listingId);
+          setListing(entry ? decorateDataListing(toMarketListing(entry)) : null);
+        })
+        .catch((reason) => setError(reason instanceof Error ? reason.message : "数据集详情加载失败"))
+        .finally(() => setLoading(false));
+      return;
+    }
     void catalogApi.listPublicDataMarketListings()
       .then((publicListings) => {
         const realListing = publicListings.find((item) => item.id === listingId);

@@ -90,19 +90,42 @@ test("server-renders the data workbench route", async () => {
   const html = await response.text();
   assert.match(html, /<title>数据与标注 · SenseMu<\/title>/i);
   assert.match(html, /数据与标注/);
-  assert.match(html, /正在读取工作区/);
+  assert.match(html, /正在读取数据集/);
+  assert.doesNotMatch(html, /后端访问令牌/);
   assert.doesNotMatch(html, /aria-label="项目导航"/);
+  assert.doesNotMatch(html, /创建第一个工作区|创建视觉项目|视频流待接入/);
 });
 
-test("server-renders the annotation editor route", async () => {
-  const response = await render("/studio/data/annotate?task=ppe-video-gate-a");
+test("server-renders the automl workbench route with token panel", async () => {
+  const response = await render("/studio/automl");
   assert.equal(response.status, 200);
 
   const html = await response.text();
-  assert.match(html, /<title>数据标注 · SenseMu<\/title>/i);
-  assert.match(html, /返回标注任务/);
-  assert.match(html, /正在读取任务/);
-  assert.doesNotMatch(html, /先试跑 8 张/);
+  assert.match(html, /<title>AutoML 数据联调 · SenseMu<\/title>/i);
+  assert.match(html, /后端访问令牌/);
+  assert.match(html, /aria-label="后端访问令牌"/);
+  assert.match(html, /算法库/);
+  assert.match(html, /上传素材文件/);
+  assert.match(html, /创建数据集/);
+  assert.match(html, /初始类别/);
+  assert.doesNotMatch(html, /AutoML 接口尚未配置/);
+});
+
+test("server-renders the automl visual annotation editor route", async () => {
+  const withoutContext = await render("/studio/automl/annotate");
+  assert.equal(withoutContext.status, 200);
+  assert.match(await withoutContext.text(), /请从 AutoML 联调台的样本列表进入标注/);
+
+  const response = await render("/studio/automl/annotate?dataset=910001&version=920001&task=950001&item=940001");
+  assert.equal(response.status, 200);
+
+  const html = await response.text();
+  assert.match(html, /<title>AutoML 样本标注 · SenseMu<\/title>/i);
+  assert.match(html, /返回联调台/);
+  assert.match(html, /aria-label="标注任务 ID"/);
+  assert.match(html, /保存标注/);
+  assert.match(html, /aria-label="标注画布"/);
+  assert.match(html, /本张标注/);
 });
 
 test("server-renders the training workbench route", async () => {

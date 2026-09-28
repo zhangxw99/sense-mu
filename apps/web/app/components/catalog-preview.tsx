@@ -56,7 +56,7 @@ function directBoxStyle(box: CatalogPreviewData["boxes"][number]): CSSProperties
 
 export function CatalogPreview({ preview, kind, large = false, zoom = 1 }: CatalogPreviewProps) {
   const frameRatio = large ? 4 / 3 : 16 / 9;
-  const sceneImage = getCatalogSceneImage(preview.scene);
+  const sceneImage = preview.image_url ? null : getCatalogSceneImage(preview.scene);
   const sourceRatio = Math.min(4, Math.max(0.25, preview.aspect_ratio ?? sceneImage?.aspectRatio ?? 1));
   const imageUrl = preview.image_url ?? sceneImage?.url;
   const previewStyle: PreviewStyle | undefined = imageUrl

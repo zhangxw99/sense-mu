@@ -3301,6 +3301,17 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   color: #895c55;
   border-color: rgb(151 88 77 / 0.16);
   background: #f8eeeb;
+  animation: workbench-error-shake 0.45s ease-in-out;
+}
+
+@keyframes workbench-error-shake {
+  0%, 100% { transform: translateX(0); }
+  15% { transform: translateX(-7px); }
+  30% { transform: translateX(7px); }
+  45% { transform: translateX(-5px); }
+  60% { transform: translateX(5px); }
+  75% { transform: translateX(-3px); }
+  90% { transform: translateX(3px); }
 }
 
 .notice-message {
@@ -4356,7 +4367,8 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   text-align: center;
 }
 
-.dataset-class-editor-row input {
+.dataset-class-editor-row input,
+.dataset-class-editor-actions input {
   width: 100%;
   height: 34px;
   padding: 0 10px;
@@ -4367,7 +4379,8 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   font-size: 10px;
 }
 
-.dataset-class-editor-row input:focus {
+.dataset-class-editor-row input:focus,
+.dataset-class-editor-actions input:focus {
   border-color: rgb(17 18 16 / 0.38);
   box-shadow: 0 0 0 3px rgb(17 18 16 / 0.05);
 }
@@ -4388,7 +4401,8 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
 }
 
 .dataset-class-editor-row > button:disabled,
-.dataset-class-editor-row input:disabled {
+.dataset-class-editor-row input:disabled,
+.dataset-class-editor-actions input:disabled {
   cursor: not-allowed;
   opacity: 0.62;
 }
@@ -4410,6 +4424,11 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   justify-content: space-between;
   gap: 8px;
   margin-top: 12px;
+}
+
+.dataset-class-editor-actions input {
+  flex: 1;
+  min-width: 0;
 }
 
 .dataset-classless-note {
@@ -4682,6 +4701,22 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   font-size: 8px;
 }
 
+.market-publish-button {
+  color: #fff;
+  border-color: #292a27;
+  background: #292a27;
+}
+
+.market-publish-button:hover {
+  border-color: #111210;
+  background: #111210;
+}
+
+.market-publish-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .quality-loading {
   display: flex;
   min-height: 160px;
@@ -4931,6 +4966,16 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   cursor: pointer;
 }
 
+.asset-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.asset-heading-actions .dataset-upload-button {
+  position: relative;
+}
+
 .dataset-upload-button input {
   position: absolute;
   width: 1px;
@@ -5008,6 +5053,56 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   border-radius: 9px;
   color: #979993;
   background: #fff;
+}
+
+.asset-filter-select {
+  height: 32px;
+  max-width: 130px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: #30322e;
+  background: #fff;
+  font-size: 8px;
+  cursor: pointer;
+}
+
+.asset-heading-actions .secondary-button.is-active {
+  color: #fff;
+  border-color: #111210;
+  background: #111210;
+}
+
+.asset-annotation-chips {
+  position: absolute;
+  bottom: 6px;
+  left: 6px;
+  right: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  justify-content: flex-start;
+  pointer-events: none;
+}
+
+.asset-annotation-chips.is-inline {
+  position: static;
+  margin-top: 2px;
+}
+
+.annotation-chip {
+  padding: 2px 5px;
+  border-radius: 5px;
+  color: #111210;
+  background: rgb(255 255 255 / 0.92);
+  box-shadow: 0 1px 3px rgb(17 18 16 / 0.25);
+  font-size: 8px;
+  white-space: nowrap;
+}
+
+.annotation-chip.is-empty {
+  color: #979993;
+  font-style: italic;
 }
 
 .asset-search input {
@@ -5362,6 +5457,11 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr);
   gap: 11px;
+}
+
+/* 「新建训练」专注模式：表单通栏 */
+.training-primary-grid.is-compose {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .training-config-card,
@@ -13173,6 +13273,51 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   gap: 12px;
 }
 
+/* AutoML 上架数据的真实封面（第一张已标注样本 + 标注框） */
+.market-cover {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  background: #1f2224;
+}
+
+.market-cover img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.market-cover-box {
+  position: absolute;
+  border: 2px solid #8ad3ff;
+  border-radius: 2px;
+}
+
+.market-cover-box small {
+  position: absolute;
+  top: -15px;
+  left: -2px;
+  padding: 1px 4px;
+  border-radius: 3px 3px 0 0;
+  color: #111210;
+  background: #8ad3ff;
+  font-size: 8px;
+  white-space: nowrap;
+}
+
+.market-cover-kind {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  color: #fff;
+  background: rgb(17 18 16 / 0.72);
+  font-size: 8px;
+}
+
 .storefront-card {
   display: flex;
   min-width: 0;
@@ -16247,11 +16392,20 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
 }
 
 .annotation-editor-notice {
-  display: none;
+  display: block;
+  grid-column: 1 / -1;
   margin: 0;
   color: #747670;
   font-size: 12px;
   line-height: 1.45;
+}
+
+.annotation-editor-notice[role="alert"] {
+  color: #c4483f;
+}
+
+.annotation-editor-notice.is-success {
+  color: #3d7d46;
 }
 
 .editor-primary-actions {
@@ -16394,6 +16548,16 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   background-size: 300% 200%;
 }
 
+.annotation-image-frame {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.annotation-image-frame > .canvas-box {
+  pointer-events: auto;
+}
+
 .canvas-drag-layer {
   position: absolute;
   z-index: 1;
@@ -16472,10 +16636,52 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   white-space: nowrap;
 }
 
-.annotation-filmstrip {
+.annotation-ai-overlay {
+  position: absolute;
+  z-index: 4;
+  inset: 0;
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr) 32px;
-  align-items: center;
+  place-content: center;
+  justify-items: center;
+  gap: 6px;
+  color: #fff;
+  background: rgb(17 18 16 / 0.55);
+  backdrop-filter: blur(2px);
+  text-align: center;
+}
+
+.annotation-ai-overlay strong {
+  font-size: 12px;
+}
+
+.annotation-ai-overlay small {
+  color: rgb(255 255 255 / 0.72);
+  font-size: 9px;
+}
+
+.annotation-ai-overlay .spinner {
+  color: #d8a8ff;
+}
+
+.annotation-tool-rail button.ai-annotate-button {
+  color: #fff;
+  background: linear-gradient(135deg, #8f6cff, #d8a8ff);
+  box-shadow: 0 4px 12px rgb(143 108 255 / 0.35);
+}
+
+.annotation-tool-rail button.ai-annotate-button:hover {
+  background: linear-gradient(135deg, #7c58f2, #cf95ff);
+}
+
+.annotation-tool-rail button.ai-annotate-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+  box-shadow: none;
+}
+
+.annotation-filmstrip {
+  display: flex;
+  flex-direction: column;
   gap: 7px;
   min-height: 86px;
   padding: 8px 11px;
@@ -16483,7 +16689,28 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   background: #1e2022;
 }
 
-.annotation-filmstrip > button {
+.filmstrip-main-row {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 32px;
+  align-items: center;
+  gap: 7px;
+}
+
+.filmstrip-controls-row {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 7px;
+}
+
+.filmstrip-page-buttons {
+  display: flex;
+  gap: 6px;
+  justify-self: center;
+}
+
+.annotation-filmstrip > button,
+.filmstrip-main-row > button {
   display: grid;
   place-items: center;
   width: 30px;
@@ -16497,8 +16724,24 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
 .filmstrip-items {
   display: flex;
   min-width: 0;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 6px;
+  overflow-x: auto;
+}
+
+.filmstrip-thumb {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 4px;
+}
+
+.filmstrip-pagination {
+  justify-self: start;
+  white-space: nowrap;
+  color: #a9aba4;
+  font-size: 10px;
 }
 
 .filmstrip-items button {
@@ -16577,6 +16820,35 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   flex-direction: column;
   gap: 4px;
   margin-top: 11px;
+}
+
+.instance-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  gap: 4px;
+  align-items: stretch;
+}
+
+.instance-row .instance-row-main {
+  width: 100%;
+  min-width: 0;
+}
+
+.instance-list .instance-row-delete {
+  display: grid;
+  grid-template-columns: auto;
+  place-items: center;
+  min-height: 34px;
+  padding: 0;
+  border-radius: 8px;
+  color: #a0a29a;
+  background: transparent;
+  cursor: pointer;
+}
+
+.instance-list .instance-row-delete:hover {
+  color: #c4483f;
+  background: rgb(196 72 63 / 0.08);
 }
 
 .annotation-class-list button,
@@ -16684,11 +16956,6 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
 
   .editor-history-actions {
     display: none;
-  }
-
-  .annotation-editor-notice {
-    display: block;
-    grid-column: 1 / -1;
   }
 
   .annotation-task-row {

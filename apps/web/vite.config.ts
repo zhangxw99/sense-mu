@@ -74,9 +74,16 @@ export default defineConfig(async () => {
     },
     server: {
       proxy: {
-        "/jeecg-boot": {
-          target: "http://localhost:8080",
+        "/sz-api": {
+          target: "http://127.0.0.1:9992",
           changeOrigin: true,
+          rewrite: (path: string) => path.replace(/^\/sz-api/, "/api"),
+        },
+        // SAM3 分割服务（见工作区根目录 SAMAPI.md），路径原样转发（/sam-api/predict → /predict）
+        "/sam-api": {
+          target: process.env.SENSEMU_SAM_API_TARGET ?? "http://127.0.0.1:8800",
+          changeOrigin: true,
+          rewrite: (path: string) => path.replace(/^\/sam-api/, ""),
         },
       },
       watch: isCodexSeatbeltSandbox

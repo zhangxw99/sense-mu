@@ -1,16 +1,49 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
+import { crc32, deflateSync } from "node:zlib";
 
 const BASE_URL = process.env.AUTOML_E2E_BASE_URL ?? "http://127.0.0.1:9992/api/automl";
 const TOKEN = process.env.AUTOML_E2E_TOKEN;
 const stamp = Date.now();
 const results = [];
 
+// 生成真实可解码的 PNG（IHDR/IDAT/IEND 合法）；不足目标大小的部分在 IEND 后补零——
+// PNG 解码器到达 IEND 即停止，尾部填充不影响显示，但保证分片上传测试需要的精确字节数
 function pngBytes(size, seed) {
-  const content = Buffer.alloc(size);
-  for (let index = 0; index < content.length; index += 1) {
-    content[index] = (seed + stamp + index * 31) % 251;
+  const width = 96;
+  const height = 96;
+  const raw = Buffer.alloc(height * (1 + width * 3));
+  let offset = 0;
+  for (let y = 0; y < height; y += 1) {
+    raw[offset] = 0;
+    offset += 1;
+    for (let x = 0; x < width; x += 1) {
+      raw[offset] = (x * 2 + seed * 40) % 256;
+      raw[offset + 1] = (y * 2 + seed * 80) % 256;
+      raw[offset + 2] = (x + y + seed * 120) % 256;
+      offset += 3;
+    }
   }
-  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, seed & 0xff]), content]);
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // color type RGB
+  const chunk = (type, data) => {
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body) >>> 0);
+    return Buffer.concat([length, body, crc]);
+  };
+  const png = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", deflateSync(raw)),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+  if (size <= png.length) return png;
+  return Buffer.concat([png, Buffer.alloc(size - png.length)]);
 }
 
 function formDataFile(field, fileName, bytes) {
@@ -86,8 +119,10 @@ const init = await request("/files/init", {
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({ fileName: `chunked-${stamp}.png`, fileSize: largeFile.length, fileMd5: largeMd5, chunkSize }),
 });
+// 真 PNG 内容只依赖 seed：首轮走完整分片，后续轮 MD5 命中秒传（uploaded=true 且无 uploadId），两条路径都是契约行为
+const deduplicated = Boolean(init.payload?.data?.uploaded) && init.payload?.data?.fileId != null;
 const uploadId = init.payload?.data?.uploadId;
-record("2.3", "POST /files/init", init.ok && Boolean(uploadId), `uploadId=${uploadId}`);
+record("2.3", "POST /files/init", init.ok && (Boolean(uploadId) || deduplicated), deduplicated ? `秒传 fileId=${init.payload?.data?.fileId}` : `uploadId=${uploadId}`);
 
 let chunksUploaded = false;
 let chunkErrors = [];
@@ -104,14 +139,22 @@ if (uploadId) {
   }
   chunksUploaded = chunkPass;
 }
-record("2.4", "POST /files/{uploadId}/chunks", chunksUploaded, chunkErrors.join(" | ") || "chunk 1/2 + 2/2");
+record("2.4", "POST /files/{uploadId}/chunks", deduplicated || chunksUploaded, deduplicated ? "秒传跳过分片" : chunkErrors.join(" | ") || "chunk 1/2 + 2/2");
 
-const status = uploadId ? await request(`/files/${uploadId}`) : { ok: false, body: "无 uploadId" };
-record("2.6", "GET /files/{uploadId}", status.ok && (status.payload?.data?.uploadedChunks ?? []).length === 2, detail(status.payload?.data, ["status", "receivedBytes"]));
+const status = uploadId ? await request(`/files/${uploadId}`) : { ok: !deduplicated, body: "秒传无会话" };
+if (deduplicated) record("2.6", "GET /files/{uploadId}", true, "秒传跳过状态查询");
+else record("2.6", "GET /files/{uploadId}", status.ok && (status.payload?.data?.uploadedChunks ?? []).length === 2, detail(status.payload?.data, ["status", "receivedBytes"]));
 
-const complete = uploadId ? await request(`/files/${uploadId}/complete`, { method: "POST" }) : { ok: false, body: "无 uploadId" };
-const completedFileId = complete.payload?.data?.fileId;
-record("2.5", "POST /files/{uploadId}/complete", complete.ok && completedFileId != null, complete.ok ? `fileId=${completedFileId}` : complete.body);
+let complete = { ok: false, body: "无 uploadId" };
+let completedFileId;
+if (deduplicated) {
+  completedFileId = init.payload?.data?.fileId;
+  record("2.5", "POST /files/{uploadId}/complete", true, "秒传跳过合并");
+} else {
+  complete = await request(`/files/${uploadId}/complete`, { method: "POST" });
+  completedFileId = complete.payload?.data?.fileId;
+}
+if (!deduplicated) record("2.5", "POST /files/{uploadId}/complete", complete.ok && completedFileId != null, complete.ok ? `fileId=${completedFileId}` : complete.body);
 
 const objectKeys = [directUpload.payload?.data?.objectKey, ...batchFiles.map((file) => file.objectKey), complete.payload?.data?.objectKey].filter(Boolean);
 const fileUrls = await request("/files/batch-urls", {
@@ -198,7 +241,8 @@ const taskId = createTask.payload?.data?.id;
 record("4.2", "POST .../annotation-tasks/standard", createTask.ok && taskId != null, `taskId=${taskId}`);
 
 const taskList = datasetId && versionId ? await request(`/datasets/${datasetId}/versions/${versionId}/annotation-tasks`) : { ok: false, body: "缺 datasetId/versionId" };
-record("4.1", "GET .../annotation-tasks", taskList.ok && taskList.payload?.data?.length === 1, `count=${taskList.payload?.data?.length}`);
+const taskListId = taskList.payload?.data?.[0]?.id;
+record("4.1", "GET .../annotation-tasks", taskList.ok && taskList.payload?.data?.length === 1 && taskListId != null, `count=${taskList.payload?.data?.length}, id=${taskListId}`);
 
 const itemId = itemRows[0]?.itemId;
 const saveAnnotations = datasetId && versionId && itemId && taskId ? await request(`/datasets/${datasetId}/versions/${versionId}/items/${itemId}/annotations`, {
@@ -224,6 +268,85 @@ const unusedClassList = unusedClassResponse.ok ? await request(`/datasets/${data
 const unusedClass = (unusedClassList?.payload?.data ?? []).find((item) => item.classCode === `unused_${stamp}`);
 const deleteClass = datasetId && unusedClass ? await request(`/datasets/${datasetId}/classes/${unusedClass.id}`, { method: "DELETE" }) : { ok: false, body: "未创建可删除类别" };
 record("3.7d", "DELETE .../classes/{id}", deleteClass.ok, deleteClass.ok ? "未引用类别删除成功" : `${deleteClass.body} · create=${unusedClassResponse.body} · list=${unusedClassList?.body}`);
+
+// 3.15 结构化导入（放在快照前，确保目标版本是 v1）：1 张带 YOLO 标注 + 1 张纯图
+const annImage = pngBytes(8 * 1024, 31);
+const annImageUpload = await request("/files/upload", { method: "POST", body: formDataFile("file", `ann-img-${stamp}.png`, annImage) });
+await new Promise((resolve) => setTimeout(resolve, 1200)); // 同 URL 防抖窗口 500ms，连发会被拒
+const plainImage = pngBytes(7 * 1024, 32);
+const plainUpload = await request("/files/upload", { method: "POST", body: formDataFile("file", `plain-img-${stamp}.png`, plainImage) });
+const annImgId = annImageUpload.payload?.data?.fileId;
+const plainImgId = plainUpload.payload?.data?.fileId;
+const importResult = datasetId && annImgId && plainImgId ? await request(`/datasets/${datasetId}/import-items`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    items: [
+      { dataFileId: annImgId, annotations: [
+        { labelName: "e2e_target", annotationJson: { type: "bbox", x: 0.1, y: 0.1, w: 0.3, h: 0.3 } },
+      ] },
+      { dataFileId: plainImgId, annotations: [] },
+    ],
+  }),
+}) : { ok: false, body: "缺文件 ID" };
+record("3.15", "POST .../import-items", importResult.ok
+    && Number(importResult.payload?.data?.itemCount) === dataFileIds.length + 2
+    && Number(importResult.payload?.data?.annotationCount) === 1,
+  `version=${importResult.payload?.data?.version}, itemCount=${importResult.payload?.data?.itemCount}, annotationCount=${importResult.payload?.data?.annotationCount}`);
+
+const snapshot = datasetId && versionId ? await request(`/datasets/${datasetId}/versions`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ sourceVersionId: versionId }),
+}) : { ok: false, body: "缺 datasetId/versionId" };
+const snapshotVersionId = snapshot.payload?.data?.id;
+record("3.9", "POST .../versions 快照", snapshot.ok && snapshotVersionId != null && snapshot.payload?.data?.statusCd === "BUILDING",
+  `version=${snapshot.payload?.data?.version}, id=${snapshotVersionId}, items=${snapshot.payload?.data?.itemCount}, annotations=${snapshot.payload?.data?.annotationCount}`);
+
+const release = datasetId && snapshotVersionId ? await request(`/datasets/${datasetId}/versions/${snapshotVersionId}/release`, { method: "PUT" }) : { ok: false, body: "缺快照版本 ID" };
+record("3.10", "PUT .../versions/{id}/release", release.ok, release.ok ? "发布成功" : release.body);
+
+const releasedDetails = datasetId ? await request(`/datasets/${datasetId}/version-details`) : { ok: false, body: "缺 datasetId" };
+const releasedVersion = (releasedDetails.payload?.data?.versions ?? []).find((version) => version.id === snapshotVersionId);
+record("3.6b", "GET .../version-details 快照后", releasedDetails.ok && releasedVersion?.statusCd === "READY" && Number(releasedVersion?.sampleCount) === dataFileIds.length + 2,
+  `v=${releasedVersion?.version}, status=${releasedVersion?.statusCd}, samples=${releasedVersion?.sampleCount}`);
+
+// 3.12 追加素材：新上传一张（seed 21 内容独立不撞秒传），追加到当前版本
+const appendFile = pngBytes(9 * 1024, 21);
+await new Promise((resolve) => setTimeout(resolve, 1200)); // 距上次 /files/upload 需 >1s 防抖冷却
+const appendUpload = await request("/files/upload", { method: "POST", body: formDataFile("file", `append-${stamp}.png`, appendFile) });
+const appendFileId = appendUpload.payload?.data?.fileId;
+const appendResult = datasetId && appendFileId ? await request(`/datasets/${datasetId}/files`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ dataFileIds: [appendFileId] }),
+}) : { ok: false, body: "缺 datasetId/fileId" };
+record("3.12", "POST .../files 追加素材", appendResult.ok && Number(appendResult.payload?.data?.itemCount) === dataFileIds.length + 3,
+  appendResult.ok ? `version=${appendResult.payload?.data?.version}, itemCount=${appendResult.payload?.data?.itemCount}` : `${appendResult.body} · fileId=${appendFileId}`);
+
+// 追加落在最新版本（可能不是 v1），以接口返回的目标版本 ID 为准
+const appendTargetVersionId = appendResult.payload?.data?.id;
+const itemsAfterAppend = datasetId && appendTargetVersionId ? await query(`/datasets/${datasetId}/versions/${appendTargetVersionId}/items`, { page: 1, limit: 1 }) : { ok: false, body: "缺 datasetId" };
+record("3.12b", "GET .../items 追加后", itemsAfterAppend.ok && Number(itemsAfterAppend.payload?.data?.total) === dataFileIds.length + 3, `total=${itemsAfterAppend.payload?.data?.total}`);
+
+const deleteDataset = datasetId ? await request(`/datasets/${datasetId}`, { method: "DELETE" }) : { ok: false, body: "缺 datasetId" };
+record("3.11", "DELETE /datasets/{id} 级联删除", deleteDataset.ok, deleteDataset.ok ? "删除成功" : deleteDataset.body);
+
+const listAfterDelete = await query("/datasets", { page: 1, limit: 10, name: `E2E-${stamp}` });
+record("3.11b", "GET /datasets 删除后", listAfterDelete.ok && (listAfterDelete.payload?.data?.rows ?? []).length === 0, `remaining=${listAfterDelete.payload?.data?.total}`);
+
+// 3.14 创建空数据集（无文件），验证后立即清理
+const emptyCreate = await request("/datasets", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ name: `E2E-EMPTY-${stamp}`, taskType: "OBJECT_DETECTION", classNames: ["placeholder"] }),
+});
+const emptyDatasetId = emptyCreate.payload?.data?.id;
+record("3.14", "POST /datasets 空数据集", emptyCreate.ok && emptyDatasetId != null && emptyCreate.payload?.data?.initialDatasetVersionId != null,
+  `datasetId=${emptyDatasetId}, version=${emptyCreate.payload?.data?.initialDatasetVersionId}`);
+
+const emptyDelete = emptyDatasetId ? await request(`/datasets/${emptyDatasetId}`, { method: "DELETE" }) : { ok: false, body: "缺 datasetId" };
+record("3.14b", "DELETE 空数据集清理", emptyDelete.ok, emptyDelete.ok ? "清理成功" : emptyDelete.body);
 
 const failed = results.filter((result) => !result.pass);
 console.log(`\n===== 汇总: ${results.length - failed.length}/${results.length} 通过 =====`);

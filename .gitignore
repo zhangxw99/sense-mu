@@ -30,3 +30,6 @@ __pycache__/
 # Runtime data
 .local-data/
 coverage/
+
+# CodeGraph local index
+.codegraph/

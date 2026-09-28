@@ -1438,6 +1438,8 @@ export function decorateAlgorithmListing(listing: MarketplaceListing, index = 0)
   return {
     ...listing,
     is_mock: false,
+    is_valid: listing.is_valid ?? true,
+    is_available: listing.is_available ?? true,
     preview,
     metrics: listing.metrics?.length
       ? listing.metrics

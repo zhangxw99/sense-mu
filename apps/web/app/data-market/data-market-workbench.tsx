@@ -10,7 +10,8 @@ import {
   MOCK_DATA_LISTINGS,
   type DataCatalogItem,
 } from "../../lib/catalog-mock-data";
-import { catalogApi } from "../../lib/catalog-api";
+import { catalogApi, type DataMarketListing } from "../../lib/catalog-api";
+import { getAutomlFileUrls, listAutomlMarketListings } from "../../lib/automl-data-api";
 
 export const dataTaskLabels: Record<string, string> = {
   "object-detection": "目标检测",
@@ -29,7 +30,67 @@ export const licenseLabels: Record<string, string> = {
   "CUSTOM-RESEARCH": "研究用途",
 };
 
+export const automlTaskType = (taskType: string): string => {
+  const labels: Record<string, string> = {
+    OBJECT_DETECTION: "object-detection",
+    IMAGE_CLASSIFICATION: "classification",
+    SEGMENTATION: "segmentation",
+    POSE_ESTIMATION: "pose",
+    OCR: "ocr",
+  };
+  return labels[taskType] ?? "object-detection";
+};
+
+export type AutomlCoverBox = { labelName: string; x: number; y: number; w: number; h: number };
+
 const dataScaleOptions = ["全部规模", "1 万张以下", "1–3 万张", "3 万张以上"];
+
+export const toMarketListing = (entry: {
+    versionId: string | number;
+    datasetId: string | number;
+    datasetName: string;
+    description: string | null;
+    taskType: string;
+    version: string;
+    sampleCount: number;
+    annotatedSampleCount: number;
+    classNames: string[] | null;
+    releasedAt: string | null;
+    createTime: string;
+  }): DataMarketListing => ({
+    id: `automl-${entry.versionId}`,
+    provider_workspace_id: "automl",
+    provider_name: "AutoML 数据集",
+    dataset_version_id: String(entry.versionId),
+    dataset_id: String(entry.datasetId),
+    dataset_name: entry.datasetName,
+    dataset_version_number: Number(String(entry.version).replace(/[^0-9]/g, "")) || 1,
+    project_name: entry.datasetName,
+    task_type: automlTaskType(entry.taskType),
+    asset_count: entry.sampleCount,
+    class_map: Object.fromEntries((entry.classNames ?? []).map((name) => [name, name])),
+    quality_report: null,
+    title: `${entry.datasetName} ${entry.version}`,
+    summary: entry.description?.trim() || "AutoML 数据集已发布版本",
+    source_summary: "AutoML 数据集版本快照（样本 + 标注）",
+    collection_method: "自主采集",
+    coverage_summary: `${entry.sampleCount} 个样本 · ${entry.annotatedSampleCount} 个已标注${entry.classNames?.length ? ` · 类别：${entry.classNames.join("、")}` : ""}`,
+    known_limitations: "",
+    license_code: "CUSTOM-RESEARCH",
+    custom_license_terms: null,
+    allow_commercial_use: false,
+    allow_model_training: true,
+    allow_derivative_models: true,
+    allow_redistribution: false,
+    contains_personal_data: false,
+    privacy_treatment: "未声明",
+    review_basis: "provider_attestation",
+    status: "published",
+    delivery_mode: "not_prepared",
+    delivery_status: "not_open",
+    delivery_spec_hash: null,
+    published_at: entry.releasedAt ?? entry.createTime,
+  });
 
 export function getDatasetListingCounts(listing: DataCatalogItem) {
   return {
@@ -48,7 +109,7 @@ function formatDatasetCount(value: number | null): string {
 export function DataMarketWorkbench({ previewMode }: { previewMode: boolean }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [listings, setListings] = useState<DataCatalogItem[]>(previewMode ? MOCK_DATA_LISTINGS : []);
+  const [listings, setListings] = useState<(DataCatalogItem & { automl_cover?: { objectKey: string; boxes: AutomlCoverBox[]; url: string | null } })[]>(previewMode ? MOCK_DATA_LISTINGS : []);
   const [query, setQuery] = useState("");
   const [task, setTask] = useState("全部");
   const [scene, setScene] = useState("全部场景");
@@ -56,15 +117,47 @@ export function DataMarketWorkbench({ previewMode }: { previewMode: boolean }) {
   const [scale, setScale] = useState("全部规模");
   const [license, setLicense] = useState("全部授权");
 
+
   useEffect(() => {
-    void catalogApi.listPublicDataMarketListings()
-      .then((nextListings) => setListings(mergeDataListings(nextListings, previewMode)))
+    if (previewMode) {
+      void catalogApi.listPublicDataMarketListings()
+        .then((nextListings) => setListings(mergeDataListings(nextListings, previewMode)))
+        .catch(() => {
+          setListings(MOCK_DATA_LISTINGS);
+          setError("服务暂不可用；当前显示示例数据集。");
+        })
+        .finally(() => setLoading(false));
+      return;
+    }
+    // 数据市场数据源：AutoML 已上架（LISTED）的数据集版本
+    void listAutomlMarketListings()
+      .then((entries) => {
+        const items = mergeDataListings(entries.map(toMarketListing), false).map((item) => ({
+          ...item,
+          automl_cover: {
+            objectKey: entries.find((candidate) => `automl-${candidate.versionId}` === item.id)?.coverObjectKey ?? "",
+            boxes: entries.find((candidate) => `automl-${candidate.versionId}` === item.id)?.coverBoxes ?? [],
+            url: null as string | null,
+          },
+        }));
+        setListings(items);
+        // 封面预签名 URL（第一个有标注样本的真实图片）
+        const coverKeys = [...new Set(items.map((item) => item.automl_cover.objectKey).filter(Boolean))];
+        if (!coverKeys.length) return;
+        return getAutomlFileUrls(coverKeys).then((urls) => {
+          const urlByKey = new Map(urls.map((entry) => [entry.objectKey, entry.url]));
+          setListings((current) => current.map((item) => {
+            const cover = item.automl_cover;
+            return cover ? { ...item, automl_cover: { ...cover, url: urlByKey.get(cover.objectKey) ?? null } } : item;
+          }));
+        });
+      })
       .catch((reason) => {
-        setListings(previewMode ? MOCK_DATA_LISTINGS : []);
-        const message = reason instanceof Error ? reason.message : "服务暂不可用";
-        setError(previewMode ? `${message}；当前显示示例数据集。` : message);
+        setListings([]);
+        setError(reason instanceof Error ? reason.message : "服务暂不可用");
       })
       .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previewMode]);
 
   const tasks = useMemo(
@@ -137,7 +230,19 @@ export function DataMarketWorkbench({ previewMode }: { previewMode: boolean }) {
             return (
               <article className="storefront-card" key={listing.id}>
                 <Link className="storefront-card-link" href={`/data-market/${listing.id}`} aria-label={`查看${listing.title}`}>
-                  <CatalogPreview preview={listing.preview} kind="data" />
+                  {listing.automl_cover?.url ? (
+                    <div className="market-cover" role="img" aria-label={`${listing.title} 标注样例`}>
+                      <img src={listing.automl_cover.url} alt="" />
+                      {listing.automl_cover.boxes.map((box, index) => (
+                        <span key={index} className="market-cover-box" style={{ left: `${box.x}%`, top: `${box.y}%`, width: `${box.w}%`, height: `${box.h}%` }}>
+                          <small>{box.labelName}</small>
+                        </span>
+                      ))}
+                      <span className="market-cover-kind">标注样例</span>
+                    </div>
+                  ) : (
+                    <CatalogPreview preview={listing.preview} kind="data" />
+                  )}
                   <div className="storefront-card-topline">
                     <span>{dataTaskLabels[listing.task_type] ?? listing.task_type}</span>
                     <span className="verified-label"><BadgeCheck size={14} /> 信息完整</span>

@@ -30,10 +30,16 @@ import {
   catalogApi,
   CatalogApiError,
   type CurrentIdentity,
-  type Dataset,
   type Deployment,
   type Project,
 } from "../../lib/catalog-api";
+import {
+  AUTOML_DATASETS_CHANGED_EVENT,
+  AUTOML_TOKEN_CHANGED_EVENT,
+  type AutomlDataset,
+  deleteAutomlDataset,
+  listAutomlDatasets,
+} from "../../lib/automl-data-api";
 import { getAuthLoginHref, getWebAuthConfig } from "../../lib/auth-config";
 import { isHostedPreview } from "../../lib/preview-mock-api";
 import {
@@ -102,7 +108,6 @@ const navigationGroups: Array<{ label: string; items: NavigationItem[] }> = [
 type WorkbenchGroupKey = "annotate" | "train" | "deploy";
 
 type WorkbenchResources = {
-  datasets: Array<Dataset & { projectName: string }>;
   projects: Array<Project & { modelCount: number }>;
   deployments: Array<Deployment & { projectName: string }>;
 };
@@ -110,13 +115,12 @@ type WorkbenchResources = {
 type WorkbenchResourceLoadError = "unavailable" | "permission_denied";
 
 const emptyWorkbenchResources: WorkbenchResources = {
-  datasets: [],
   projects: [],
   deployments: [],
 };
 
 type ResourceAction =
-  | { kind: "dataset"; id: string; name: string; projectId: string }
+  | { kind: "dataset"; id: string; name: string }
   | { kind: "project"; id: string; name: string }
   | { kind: "deployment"; id: string; name: string; projectId: string };
 
@@ -146,8 +150,10 @@ function Navigation({
   onMobileClose,
   identity,
   resources,
+  automlDatasets,
   resourceLoadError,
   onRefreshResources,
+  onRefreshAutomlDatasets,
   expandedGroups,
   onToggleGroup,
   onDeleteDataset,
@@ -166,11 +172,13 @@ function Navigation({
   onMobileClose: () => void;
   identity: CurrentIdentity | null;
   resources: WorkbenchResources;
+  automlDatasets: AutomlDataset[];
   resourceLoadError: WorkbenchResourceLoadError | null;
   onRefreshResources: () => void;
+  onRefreshAutomlDatasets: () => void;
   expandedGroups: Record<WorkbenchGroupKey, boolean>;
   onToggleGroup: (group: WorkbenchGroupKey) => void;
-  onDeleteDataset: (dataset: Dataset) => void;
+  onDeleteDataset: (dataset: AutomlDataset) => void;
   onArchiveProject: (project: Project) => void;
   onDisableDeployment: (deployment: Deployment) => void;
 }) {
@@ -181,11 +189,9 @@ function Navigation({
   const currentProject = resources.projects.find((project) => project.id === selectedProjectId)
     ?? resources.projects[0]
     ?? null;
-  const addDatasetHref = currentProject
-    ? `/studio/data?project=${encodeURIComponent(currentProject.id)}&createDataset=1`
-    : "/studio/data?createProject=1";
+  const addDatasetHref = "/studio/data?createDataset=1";
   const addTrainingHref = currentProject
-    ? `/studio/training?project=${encodeURIComponent(currentProject.id)}#new-training`
+    ? `/studio/training?project=${encodeURIComponent(currentProject.id)}&compose=1#new-training`
     : "/studio/data?createProject=1";
   const addDeploymentHref = currentProject
     ? `/services?project=${encodeURIComponent(currentProject.id)}&view=publish#publish-service`
@@ -299,40 +305,44 @@ function Navigation({
               group="annotate"
               label="数据与标注"
               icon={Database}
-              count={resources.datasets.length}
+              count={automlDatasets.length}
               expanded={expandedGroups.annotate}
               onToggle={onToggleGroup}
               addHref={addDatasetHref}
               addLabel="新建数据集"
               onMobileClose={onMobileClose}
             >
-              {resourceLoadError && !resources.datasets.length ? <span className="workbench-resource-empty">{resourceAlert.emptyLabel}</span> : resources.datasets.length ? resources.datasets.map((dataset) => {
-                const selected = pathname.startsWith("/studio/data") && selectedDatasetId === dataset.id;
+              {automlDatasets.length ? automlDatasets.map((dataset) => {
+                const selected = pathname.startsWith("/studio/data") && selectedDatasetId === String(dataset.id);
                 return (
                   <div className={`workbench-resource-row${selected ? " is-current" : ""}`} key={dataset.id}>
                     <Link
                       className="workbench-resource-link"
-                      href={`/studio/data?project=${encodeURIComponent(dataset.project_id)}&dataset=${encodeURIComponent(dataset.id)}`}
-                      title={`${dataset.projectName} · ${dataset.name}`}
+                      href={`/studio/data?dataset=${encodeURIComponent(String(dataset.id))}`}
+                      title={dataset.name}
                       onClick={onMobileClose}
                     >
                       <span className="workbench-resource-mark">{dataset.name.slice(0, 1).toUpperCase()}</span>
                       <span>{dataset.name}</span>
-                      <small>{dataset.asset_count}</small>
+                      <small>{dataset.sampleCount ?? ""}</small>
                     </Link>
                     <button
                       className="workbench-resource-action is-danger"
                       type="button"
                       aria-label={`删除数据集 ${dataset.name}`}
-                      title={dataset.version_count ? "已有冻结版本，不能删除" : "删除数据集"}
-                      disabled={dataset.version_count > 0}
+                      title="删除数据集"
                       onClick={() => { onMobileClose(); onDeleteDataset(dataset); }}
                     >
                       <Trash2 size={13} aria-hidden="true" />
                     </button>
                   </div>
                 );
-              }) : <span className="workbench-resource-empty">暂无数据集</span>}
+              }) : (
+                <span className="workbench-resource-empty">
+                  暂无数据集
+                  <button type="button" onClick={onRefreshAutomlDatasets} aria-label="重新加载数据集">↻</button>
+                </span>
+              )}
             </WorkbenchNavigationGroup>
 
             <WorkbenchNavigationGroup
@@ -618,6 +628,7 @@ export function ProductShell({
   >("loading");
   const [previewMode, setPreviewMode] = useState(false);
   const [workbenchResources, setWorkbenchResources] = useState<WorkbenchResources>(emptyWorkbenchResources);
+  const [automlDatasets, setAutomlDatasets] = useState<AutomlDataset[]>([]);
   const [workbenchWorkspaceId, setWorkbenchWorkspaceId] = useState<string | null>(null);
   const [resourceLoadError, setResourceLoadError] = useState<WorkbenchResourceLoadError | null>(null);
   const [expandedWorkbenchGroups, setExpandedWorkbenchGroups] = useState<Record<WorkbenchGroupKey, boolean>>(
@@ -728,21 +739,18 @@ export function ProductShell({
       }
       const projects = await catalogApi.listProjects(workspace.id);
       const groups = await Promise.all(projects.map(async (project) => {
-        const [datasets, deployments, models] = await Promise.all([
-          catalogApi.listDatasets(workspace.id, project.id),
+        const [deployments, models] = await Promise.all([
           catalogApi.listDeployments(workspace.id, project.id),
           catalogApi.listModelVersions(workspace.id, project.id),
         ]);
         return {
           project: { ...project, modelCount: models.length },
-          datasets: datasets.map((dataset) => ({ ...dataset, projectName: project.name })),
           deployments: deployments.map((deployment) => ({ ...deployment, projectName: project.name })),
         };
       }));
       if (!isCurrentRequest()) return;
       setWorkbenchResources({
         projects: groups.map((group) => group.project),
-        datasets: groups.flatMap((group) => group.datasets),
         deployments: groups.flatMap((group) => group.deployments),
       });
       setWorkbenchWorkspaceId(workspace.id);
@@ -765,9 +773,28 @@ export function ProductShell({
     }
   }, []);
 
+  const refreshAutomlDatasets = useCallback(async () => {
+    try {
+      const page = await listAutomlDatasets({ page: 1, limit: 50 });
+      setAutomlDatasets(page.rows);
+    } catch {
+      setAutomlDatasets([]);
+    }
+  }, []);
+
   useEffect(() => {
     void refreshWorkbenchResources();
   }, [refreshWorkbenchResources]);
+
+  useEffect(() => {
+    void refreshAutomlDatasets();
+    window.addEventListener(AUTOML_TOKEN_CHANGED_EVENT, refreshAutomlDatasets);
+    window.addEventListener(AUTOML_DATASETS_CHANGED_EVENT, refreshAutomlDatasets);
+    return () => {
+      window.removeEventListener(AUTOML_TOKEN_CHANGED_EVENT, refreshAutomlDatasets);
+      window.removeEventListener(AUTOML_DATASETS_CHANGED_EVENT, refreshAutomlDatasets);
+    };
+  }, [refreshAutomlDatasets]);
 
   useEffect(() => {
     setExpandedWorkbenchGroups(defaultWorkbenchGroups(pathname));
@@ -798,7 +825,7 @@ export function ProductShell({
   async function confirmResourceAction() {
     const action = pendingResourceAction;
     if (!action) return;
-    if (!workbenchWorkspaceId) {
+    if (action.kind !== "dataset" && !workbenchWorkspaceId) {
       setResourceActionError("未找到当前工作区，请刷新后重试");
       return;
     }
@@ -807,19 +834,22 @@ export function ProductShell({
     setResourceActionError(null);
     try {
       if (action.kind === "dataset") {
-        await catalogApi.deleteDataset(workbenchWorkspaceId, action.id);
+        await deleteAutomlDataset(action.id);
         if (selectedDatasetId === action.id) {
-          router.replace(`/studio/data?project=${encodeURIComponent(action.projectId)}`);
+          router.replace("/studio/data");
         }
       } else if (action.kind === "project") {
-        await catalogApi.archiveProject(workbenchWorkspaceId, action.id);
+        await catalogApi.archiveProject(workbenchWorkspaceId!, action.id);
         if (selectedProjectId === action.id) {
           router.replace("/");
         }
       } else {
-        await catalogApi.disableDeployment(workbenchWorkspaceId, action.id);
+        await catalogApi.disableDeployment(workbenchWorkspaceId!, action.id);
       }
       await refreshWorkbenchResources();
+      if (action.kind === "dataset") {
+        await refreshAutomlDatasets();
+      }
       router.refresh();
       setPendingResourceAction(null);
     } catch (reason) {
@@ -833,7 +863,7 @@ export function ProductShell({
     dataset: {
       title: "删除数据集",
       confirm: "删除数据集",
-      detail: "删除后无法恢复。已有冻结版本、标注任务或视频抽帧任务的数据集不能删除。",
+      detail: "删除后数据集的版本、样本、标注和标注任务一并移除，无法恢复。已被训练任务引用的数据集不能删除。",
       Icon: Trash2,
     },
     project: {
@@ -966,15 +996,16 @@ export function ProductShell({
         onMobileClose={() => setMobileNavigationOpen(false)}
         identity={identity}
         resources={workbenchResources}
+        automlDatasets={automlDatasets}
         resourceLoadError={resourceLoadError}
         onRefreshResources={() => void refreshWorkbenchResources()}
+        onRefreshAutomlDatasets={() => void refreshAutomlDatasets()}
         expandedGroups={expandedWorkbenchGroups}
         onToggleGroup={toggleWorkbenchGroup}
         onDeleteDataset={(dataset) => requestResourceAction({
           kind: "dataset",
-          id: dataset.id,
+          id: String(dataset.id),
           name: dataset.name,
-          projectId: dataset.project_id,
         })}
         onArchiveProject={(project) => requestResourceAction({
           kind: "project",

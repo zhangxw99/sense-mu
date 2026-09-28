@@ -2,6 +2,7 @@
 
 import {
   AlertCircle,
+  X,
   ArrowUpRight,
   BadgeCheck,
   Ban,
@@ -155,6 +156,32 @@ export function TrainingWorkbench() {
   const searchParams = useSearchParams();
   const requestedProjectId = searchParams.get("project");
   const requestedDatasetVersionId = searchParams.get("datasetVersion");
+  const requestedTab = searchParams.get("tab");
+  const [activeTab, setActiveTab] = useState<"training" | "models">(
+    requestedTab === "models" ? "models" : "training");
+  // 「新建训练」专注模式：只显示新建训练卡片（由页头按钮/侧栏入口 compose=1 进入）
+  const composing = searchParams.get("compose") === "1";
+  const exitCompose = () => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("compose");
+    window.history.replaceState(null, "", `${window.location.pathname}?${params.toString()}`);
+  };
+  // 头部「新建训练」按钮带 #new-training 锚点：URL 变化（含客户端路由）时确保落在训练页签并滚动到表单
+  useEffect(() => {
+    const applyHash = () => {
+      setActiveTab(requestedTab === "models" ? "models" : "training");
+      if (window.location.hash === "#new-training") {
+        requestAnimationFrame(() => {
+          document.getElementById("new-training")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+      }
+    };
+    applyHash();
+    window.addEventListener("hashchange", applyHash);
+    return () => window.removeEventListener("hashchange", applyHash);
+    // requestedTab 随客户端路由更新；applyHash 闭包引用其最新值
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestedTab]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -168,6 +195,7 @@ export function TrainingWorkbench() {
   const [modelVersions, setModelVersions] = useState<ModelVersion[]>([]);
   const [policies, setPolicies] = useState<EvaluationPolicy[]>([]);
   const [evaluations, setEvaluations] = useState<Evaluation[]>([]);
+  const [runName, setRunName] = useState("");
   const [datasetVersionId, setDatasetVersionId] = useState("");
   const [engineKey, setEngineKey] = useState("ultralytics");
   const [model, setModel] = useState("yolo26s.pt");
@@ -322,6 +350,7 @@ export function TrainingWorkbench() {
           engine: selectedEngine.key,
           executor: selectedEngine.executor,
           recipe: {
+            name: runName.trim(),
             model,
             task: selectedEngine.defaults.task,
             epochs,
@@ -334,6 +363,7 @@ export function TrainingWorkbench() {
       idempotencyKey.current = null;
       await refreshProjectState(workspace, project);
       setNotice(run.reused ? "已恢复上次提交的训练任务" : "训练任务已进入队列");
+      exitCompose();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "训练任务提交失败");
     } finally {
@@ -442,6 +472,8 @@ export function TrainingWorkbench() {
         </div>
       ) : null}
 
+      {!composing ? (
+      <>
       <section className="training-object-summary" aria-label="训练项目摘要">
         <div className="training-object-summary-copy">
           <span className="eyebrow">训练与模型</span>
@@ -457,17 +489,36 @@ export function TrainingWorkbench() {
         <Link className="secondary-button compact" href={`/studio/data?project=${project.id}`}><Database size={14} />查看数据</Link>
       </section>
 
-      <div className="training-primary-grid">
+      <nav className="dataset-view-tabs" aria-label="训练视图">
+        <button type="button" className={activeTab === "training" ? "is-active" : ""} onClick={() => setActiveTab("training")}>训练 <span>{runs.length}</span></button>
+        <button type="button" className={activeTab === "models" ? "is-active" : ""} onClick={() => setActiveTab("models")}>模型 <span>{modelVersions.length}</span></button>
+      </nav>
+      </>
+      ) : null}
+
+      {activeTab === "training" ? (
+      <div className={`training-primary-grid${composing ? " is-compose" : ""}`}>
         <form className="panel training-config-card" id="new-training" onSubmit={(event) => void submitTraining(event)}>
+          {!composing ? (
           <div className="training-card-heading">
             <span className="training-card-icon"><FlaskConical size={17} /></span>
             <div>
               <h2>新建训练</h2>
             </div>
           </div>
+          ) : null}
 
           {versionOptions.length && compatibleEngines.length ? (
             <div className="training-form-grid">
+              <label className="training-field training-field-wide">
+                <span>训练名称</span>
+                <input
+                  value={runName}
+                  onChange={(event) => setRunName(event.target.value)}
+                  placeholder="例如：PPE yolo11s 首轮训练"
+                  required
+                />
+              </label>
               <label className="training-field training-field-wide">
                 <span>数据集版本</span>
                 <select value={datasetVersionId} onChange={(event) => setDatasetVersionId(event.target.value)}>
@@ -511,14 +562,20 @@ export function TrainingWorkbench() {
           )}
 
           <div className="training-submit-row">
+            {composing ? (
+              <button className="secondary-button" type="button" onClick={exitCompose}>
+                <X size={14} />取消
+              </button>
+            ) : null}
             <span><ShieldCheck size={14} />SenseMu 提供训练环境 · 费用功能尚未开通</span>
-            <button className="primary-button" type="submit" disabled={busy || !datasetVersionId}>
+            <button className="primary-button" type="submit" disabled={busy || !datasetVersionId || !runName.trim()}>
               {busy ? <LoaderCircle size={14} className="spinner" /> : <Play size={14} fill="currentColor" />}
               提交训练
             </button>
           </div>
         </form>
 
+        {!composing ? (
         <article className="panel training-runs-card">
           <div className="training-card-heading">
             <span className="training-card-icon"><Timer size={17} /></span>
@@ -533,7 +590,7 @@ export function TrainingWorkbench() {
                     <span className={`run-state-chip ${run.status}`}>{statusLabels[run.status] ?? run.status}</span>
                     <small>{formatTime(run.created_at)}</small>
                   </div>
-                  <strong>{String(run.recipe.model ?? run.engine)}</strong>
+                  <strong>{String(run.recipe.name || (run.recipe.model ?? run.engine))}</strong>
                   <span>数据版本 ds_v{versionOptions.find(({ version }) => version.id === run.dataset_version_id)?.version.version_number ?? "—"} · {String(run.recipe.epochs ?? "—")} 轮 · 平台训练</span>
                   {run.error_message ? (
                     <p className="training-run-error"><AlertCircle size={12} />{run.error_message}</p>
@@ -558,8 +615,12 @@ export function TrainingWorkbench() {
             <div className="training-runs-empty"><Cpu size={19} /><p>尚无训练任务，首次提交后会在此追踪。</p></div>
           )}
         </article>
-      </div>
+        ) : null}
+        </div>
+      ) : null}
 
+      {activeTab === "models" ? (
+      <>
       <form
         id="acceptance-evaluation"
         className="panel acceptance-card"
@@ -721,6 +782,8 @@ export function TrainingWorkbench() {
       </article>
 
       <ModelComparisonPanel models={modelVersions} />
+      </>
+      ) : null}
     </section>
   );
 }

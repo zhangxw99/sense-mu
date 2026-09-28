@@ -4,15 +4,15 @@ SenseMu 是一个面向视觉 AI 的端到端工作平台：在同一个可追�
 
 项目交接入口：
 
-- 后端协同开发手册与正式地址：[`docs/DEVELOPER_HANDOFF.md`](docs/DEVELOPER_HANDOFF.md)
-- 核心对象与业务边界：[`docs/DOMAIN_MODEL.md`](docs/DOMAIN_MODEL.md)
-- 产品功能与边界：[`docs/PRODUCT_FUNCTIONS.md`](docs/PRODUCT_FUNCTIONS.md)
-- 后端接口与鉴权：[`docs/API_GUIDE.md`](docs/API_GUIDE.md)
-- 架构与代码审计：[`docs/CODE_AUDIT_2026-08-16.md`](docs/CODE_AUDIT_2026-08-16.md)
-- 服务器上线前验收门禁：[`docs/PRE_SERVER_ACCEPTANCE.md`](docs/PRE_SERVER_ACCEPTANCE.md)
-- 当前状态与优先级：[`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md)
-- OIDC/BFF 登录边界：[`docs/adr/0037-oidc-bff-session-boundary.md`](docs/adr/0037-oidc-bff-session-boundary.md)
-- 公开视觉数据集目录与后续接入门禁：[`docs/OPEN_DATASET_HARVEST.md`](docs/OPEN_DATASET_HARVEST.md)
+- 后端协同开发手册与正式地址：[`docs/DEVELOPER_HANDOFF.md`](backups/docs/DEVELOPER_HANDOFF.md)
+- 核心对象与业务边界：[`docs/DOMAIN_MODEL.md`](backups/docs/DOMAIN_MODEL.md)
+- 产品功能与边界：[`docs/PRODUCT_FUNCTIONS.md`](backups/docs/PRODUCT_FUNCTIONS.md)
+- 后端接口与鉴权：[`docs/API_GUIDE.md`](backups/docs/API_GUIDE.md)
+- 架构与代码审计：[`docs/CODE_AUDIT_2026-08-16.md`](backups/docs/CODE_AUDIT_2026-08-16.md)
+- 服务器上线前验收门禁：[`docs/PRE_SERVER_ACCEPTANCE.md`](backups/docs/PRE_SERVER_ACCEPTANCE.md)
+- 当前状态与优先级：[`docs/PROJECT_STATUS.md`](backups/docs/PROJECT_STATUS.md)
+- OIDC/BFF 登录边界：[`docs/adr/0037-oidc-bff-session-boundary.md`](backups/docs/adr/0037-oidc-bff-session-boundary.md)
+- 公开视觉数据集目录与后续接入门禁：[`docs/OPEN_DATASET_HARVEST.md`](backups/docs/OPEN_DATASET_HARVEST.md)
 
 正式地址：
 

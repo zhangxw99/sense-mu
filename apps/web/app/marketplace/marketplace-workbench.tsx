@@ -210,14 +210,17 @@ export function MarketplaceWorkbench({ previewMode }: { previewMode: boolean }) 
             const subscription = subscriptionByListingId.get(listing.id);
             const purchased = subscription?.status === "active" || mockPurchasedIds.includes(listing.id);
             const pending = subscription?.status === "pending_payment";
-            const secondaryMetric = listing.metrics.find((metric) => metric.label === "召回率" || metric.label === "精确率") ?? listing.metrics[1];
+            const primaryMetric = listing.metrics[0] ?? { label: "调用状态", value: listing.is_available === false ? "不可用" : "可用" };
+            const secondaryMetric = listing.metrics.find((metric) => metric.label === "召回率" || metric.label === "精确率") ?? listing.metrics[1] ?? { label: "模型版本", value: `v${listing.model_version_number}` };
             return (
               <article className="storefront-card" key={listing.id}>
                 <Link className="storefront-card-link" href={`/marketplace/${listing.id}`} aria-label={`查看${listing.title}`}>
                   <CatalogPreview preview={listing.preview} kind="algorithm" />
                   <div className="storefront-card-topline">
                     <span>{taskLabels[listing.task_type] ?? listing.category}</span>
-                    <span className="verified-label"><BadgeCheck size={14} /> 已验证</span>
+                    <span className={listing.is_valid === false ? "unverified-label" : "verified-label"}>
+                      <BadgeCheck size={14} /> {listing.is_valid === false ? "待验证" : "已验证"}
+                    </span>
                   </div>
                   <h2>{listing.title}</h2>
                   <p>{listing.summary}</p>
@@ -226,7 +229,7 @@ export function MarketplaceWorkbench({ previewMode }: { previewMode: boolean }) 
                     <span>{listing.model_architecture}</span>
                   </div>
                   <div className="storefront-card-evidence">
-                    <span><small>{listing.metrics[0].label}</small><strong>{listing.metrics[0].value}</strong></span>
+                    <span><small>{primaryMetric.label}</small><strong>{primaryMetric.value}</strong></span>
                     <span><small>{secondaryMetric.label}</small><strong>{secondaryMetric.value}</strong></span>
                     <span><small>响应 P95</small><strong>{listing.latency_p95}</strong></span>
                   </div>
@@ -240,9 +243,13 @@ export function MarketplaceWorkbench({ previewMode }: { previewMode: boolean }) 
                     ) : !workspaces.length ? (
                       <Link className="secondary-button compact" href="/settings">创建工作区</Link>
                     ) : (
-                      <button className="primary-button compact" type="button" disabled={busyId === listing.id} onClick={() => workspaces.length > 1 ? setCheckoutListing(listing) : void buy(listing)}>
-                        {busyId === listing.id ? "处理中" : "购买 API"}
-                      </button>
+                      listing.is_available === false ? (
+                        <span className="disabled-button compact">暂不可用</span>
+                      ) : (
+                        <button className="primary-button compact" type="button" disabled={busyId === listing.id} onClick={() => workspaces.length > 1 ? setCheckoutListing(listing) : void buy(listing)}>
+                          {busyId === listing.id ? "处理中" : "购买 API"}
+                        </button>
+                      )
                     )}
                   </div>
                 </div>

@@ -1,2 +1,0 @@
-"""SenseMu background worker package."""
-

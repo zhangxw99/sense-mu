@@ -295,7 +295,7 @@ function automlApiBaseUrl(): string {
   return "/sz-api/automl";
 }
 
-async function fetchAutoml<T>(
+export async function fetchAutoml<T>(
   path: string,
   init: RequestInit = {},
   timeoutMs = AUTOML_API_TIMEOUT_MS,
@@ -762,5 +762,55 @@ export async function saveAutomlAnnotations(
   return fetchAutoml<AutomlAnnotation[]>(
     `/datasets/${encodeURIComponent(String(datasetId))}/versions/${encodeURIComponent(String(datasetVersionId))}/items/${encodeURIComponent(String(itemId))}/annotations`,
     jsonInit("PUT", input),
+  );
+}
+
+// ---- 算法市场（模型条目，§4.2.5：算法 = 已发布模型，版本 APPROVED 即上架） ----
+
+export type AutomlAlgorithmMarketVersion = {
+  versionId: AutomlId;
+  version: string;
+  runtime: string;
+  metrics: Record<string, number> | null;
+  classNames: string[] | null;
+  packageSize: AutomlId | null;
+  registeredAt: string | null;
+  trainingTaskId: AutomlId | null;
+  datasetVersionId: AutomlId | null;
+};
+
+export type AutomlAlgorithmMarketListing = {
+  modelId: AutomlId;
+  modelCode: string;
+  name: string;
+  taskType: string;
+  framework: string | null;
+  scene: string | null;
+  description: string | null;
+  isValid: boolean;
+  versionCount: number;
+  versionId: AutomlId;
+  version: string;
+  runtime: string;
+  metrics: Record<string, number> | null;
+  classNames: string[] | null;
+  listedAt: string | null;
+  coverObjectKey: string | null;
+};
+
+export type AutomlAlgorithmMarketDetail = AutomlAlgorithmMarketListing & {
+  versions: AutomlAlgorithmMarketVersion[];
+  trainingTaskId: AutomlId | null;
+  trainingTaskName: string | null;
+  datasetVersionId: AutomlId | null;
+};
+
+export async function listAutomlAlgorithmMarketListings(): Promise<AutomlAlgorithmMarketListing[]> {
+  return fetchAutoml<AutomlAlgorithmMarketListing[]>("/market/algorithm-listings");
+}
+
+export async function getAutomlAlgorithmMarketDetail(modelId: AutomlId): Promise<AutomlAlgorithmMarketDetail> {
+  return fetchAutoml<AutomlAlgorithmMarketDetail>(
+    `/market/algorithm-listings/${encodeURIComponent(String(modelId))}`,
   );
 }

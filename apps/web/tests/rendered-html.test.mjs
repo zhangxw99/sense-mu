@@ -156,14 +156,14 @@ test("server-renders a standalone model detail route", async () => {
   assert.match(html, /正在读取详情/);
 });
 
-test("server-renders the project publishing and inference route", async () => {
+test("server-renders the deployment services overview route", async () => {
   const response = await render("/services");
   assert.equal(response.status, 200);
 
   const html = await response.text();
-  assert.match(html, /<title>发布与调用 · SenseMu<\/title>/i);
-  assert.match(html, /正在读取发布条件/);
-  assert.match(html, /发布控制面/);
+  assert.match(html, /<title>运行服务 · SenseMu<\/title>/i);
+  assert.match(html, /正在读取部署/);
+  assert.match(html, /运行服务/);
 });
 
 test("server-renders the algorithm marketplace route", async () => {
@@ -179,7 +179,7 @@ test("server-renders the algorithm marketplace route", async () => {
   assert.match(html, /aria-label="工作台对象"/);
   assert.match(html, /数据与标注/);
   assert.match(html, /训练/);
-  assert.match(html, /发布/);
+  assert.match(html, /部署/);
   assert.match(html, /aria-label="工作台快捷入口"/);
   assert.doesNotMatch(html, /storefront-detail/);
   assert.match(html, /href="\/marketplace"[^>]*aria-current="page"/);

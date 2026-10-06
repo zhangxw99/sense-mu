@@ -85,6 +85,25 @@ export default defineConfig(async () => {
           changeOrigin: true,
           rewrite: (path: string) => path.replace(/^\/sam-api/, ""),
         },
+        // 临时推理会话实例（测试验证用，默认 8101，与常驻服务隔离）
+        // 注意必须放在 /edge-api 之前，避免被更短前缀先匹配
+        "/edge-api-session": {
+          target: process.env.SENSEMU_EDGE_SESSION_TARGET ?? "http://127.0.0.1:8101",
+          changeOrigin: true,
+          rewrite: (path: string) => path.replace(/^\/edge-api-session/, ""),
+        },
+        // edge ONNX 推理服务（edge/inference-service），路径原样转发（/edge-api/v1/detect → /v1/detect）
+        "/edge-api": {
+          target: process.env.SENSEMU_EDGE_API_TARGET ?? "http://127.0.0.1:8100",
+          changeOrigin: true,
+          rewrite: (path: string) => path.replace(/^\/edge-api/, ""),
+        },
+        // edge-service 会话管理 API（临时推理会话创建/销毁，默认 8102）
+        "/edge-agent": {
+          target: process.env.SENSEMU_EDGE_AGENT_TARGET ?? "http://127.0.0.1:8102",
+          changeOrigin: true,
+          rewrite: (path: string) => path.replace(/^\/edge-agent/, ""),
+        },
       },
       watch: isCodexSeatbeltSandbox
         ? { useFsEvents: false, usePolling: true }

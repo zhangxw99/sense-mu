@@ -22,22 +22,39 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  type Dataset,
-  type DatasetVersion,
   type Evaluation,
   type EvaluationPolicy,
   type ModelVersion,
   type Project,
-  type TrainingEngine,
   type TrainingRun,
   type Workspace,
   catalogApi,
 } from "../../../lib/catalog-api";
+import { listAutomlMarketListings } from "../../../lib/automl-data-api";
+import {
+  type AutomlBaseModel,
+  type AutomlPlatformConfigProperty,
+  type AutomlPlatformOption,
+  listAutomlPlatformOptions,
+} from "../../../lib/automl-platform-api";
+import { createAutomlTrainingTask } from "../../../lib/automl-training-api";
+import { automlTaskType } from "../../data-market/data-market-workbench";
 
+// 可训练版本选项：来自数据市场已上架（LISTED）的版本
 type VersionOption = {
-  dataset: Dataset;
-  version: DatasetVersion;
+  dataset: { id: string; name: string };
+  version: { id: string; version_number: number; asset_count: number; task_type: string };
 };
+
+// 新建训练的固定参数项；aliases 对应训练平台 Schema 里的参数键（契约 §8.3 参数预填）
+const trainingParamFields = [
+  { key: "epochs", aliases: ["epochs"], label: "训练轮次", min: 1, max: 500 },
+  { key: "image_size", aliases: ["image_size", "imgsz"], label: "图像尺寸", min: 320, max: 1536 },
+  { key: "batch_size", aliases: ["batch_size", "batch"], label: "批量大小", min: 1, max: 256 },
+  { key: "seed", aliases: ["seed"], label: "随机种子", min: 0, max: 2147483647 },
+] as const;
+
+type TrainingParamKey = (typeof trainingParamFields)[number]["key"];
 
 const statusLabels: Record<string, string> = {
   queued: "排队中",
@@ -188,7 +205,7 @@ export function TrainingWorkbench() {
   const [notice, setNotice] = useState<string | null>(null);
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [project, setProject] = useState<Project | null>(null);
-  const [engines, setEngines] = useState<TrainingEngine[]>([]);
+  const [platformOptions, setPlatformOptions] = useState<AutomlPlatformOption[]>([]);
   const [versionOptions, setVersionOptions] = useState<VersionOption[]>([]);
   const [runs, setRuns] = useState<TrainingRun[]>([]);
   const [acceptanceRuns, setAcceptanceRuns] = useState<TrainingRun[]>([]);
@@ -197,28 +214,38 @@ export function TrainingWorkbench() {
   const [evaluations, setEvaluations] = useState<Evaluation[]>([]);
   const [runName, setRunName] = useState("");
   const [datasetVersionId, setDatasetVersionId] = useState("");
-  const [engineKey, setEngineKey] = useState("ultralytics");
-  const [model, setModel] = useState("yolo26s.pt");
-  const [epochs, setEpochs] = useState(100);
-  const [imageSize, setImageSize] = useState(640);
-  const [batchSize, setBatchSize] = useState(16);
-  const [seed, setSeed] = useState(42);
+  const [platformId, setPlatformId] = useState("");
+  const [baseModelId, setBaseModelId] = useState("");
+  const [params, setParams] = useState<Record<TrainingParamKey, number>>({
+    epochs: 100,
+    image_size: 640,
+    batch_size: 16,
+    seed: 42,
+  });
   const [acceptanceModelVersionId, setAcceptanceModelVersionId] = useState("");
   const [acceptanceDatasetVersionId, setAcceptanceDatasetVersionId] = useState("");
   const [acceptanceImageSize, setAcceptanceImageSize] = useState(640);
   const [acceptanceBatchSize, setAcceptanceBatchSize] = useState(16);
-  const idempotencyKey = useRef<string | null>(null);
   const acceptanceIdempotencyKey = useRef<string | null>(null);
 
   const selectedVersion = versionOptions.find(({ version }) => version.id === datasetVersionId) ?? null;
   const selectedTaskType = selectedVersion?.version.task_type ?? project?.task_type ?? "object-detection";
-  const compatibleEngines = useMemo(
-    () => engines.filter((engine) => engine.task_types.includes(selectedTaskType)),
-    [engines, selectedTaskType],
+  const compatiblePlatforms = useMemo(
+    () => platformOptions.filter((option) =>
+      option.taskTypes.some((type) => automlTaskType(type) === selectedTaskType)),
+    [platformOptions, selectedTaskType],
   );
-  const selectedEngine = useMemo(
-    () => compatibleEngines.find((engine) => engine.key === engineKey) ?? compatibleEngines[0],
-    [compatibleEngines, engineKey],
+  const selectedPlatform = useMemo(
+    () => compatiblePlatforms.find((option) => String(option.platformId) === platformId)
+      ?? compatiblePlatforms[0]
+      ?? null,
+    [compatiblePlatforms, platformId],
+  );
+  const selectedBaseModel = useMemo(
+    () => selectedPlatform?.baseModels.find((model) => String(model.id) === baseModelId)
+      ?? selectedPlatform?.baseModels[0]
+      ?? null,
+    [baseModelId, selectedPlatform],
   );
 
   const acceptanceOptions = useMemo(() => {
@@ -235,31 +262,29 @@ export function TrainingWorkbench() {
 
   const refreshProjectState = useCallback(async (selectedWorkspace: Workspace, selectedProject: Project) => {
     const [
-      datasets,
       nextRuns,
       nextModels,
       nextAcceptanceRuns,
       nextPolicies,
       nextEvaluations,
     ] = await Promise.all([
-      catalogApi.listDatasets(selectedWorkspace.id, selectedProject.id),
       catalogApi.listTrainingRuns(selectedWorkspace.id, selectedProject.id),
       catalogApi.listModelVersions(selectedWorkspace.id, selectedProject.id),
       catalogApi.listAcceptanceRuns(selectedWorkspace.id, selectedProject.id),
       catalogApi.listEvaluationPolicies(selectedWorkspace.id, selectedProject.id),
       catalogApi.listEvaluations(selectedWorkspace.id, selectedProject.id),
     ]);
-    const versionsByDataset = await Promise.all(
-      datasets.map(async (dataset) => ({
-        dataset,
-        versions: await catalogApi.listVersions(selectedWorkspace.id, dataset.id),
-      })),
-    );
-    const options = versionsByDataset.flatMap(({ dataset, versions }) =>
-      versions
-        .filter((version) => version.status === "frozen")
-        .map((version) => ({ dataset, version })),
-    );
+    // 可训练数据源 = 已发布到数据市场的版本（automl market/listings）
+    const marketListings = await listAutomlMarketListings().catch(() => []);
+    const options: VersionOption[] = marketListings.map((entry) => ({
+      dataset: { id: String(entry.datasetId), name: entry.datasetName },
+      version: {
+        id: String(entry.versionId),
+        version_number: Number(String(entry.version).replace(/[^0-9]/g, "")) || 1,
+        asset_count: entry.sampleCount,
+        task_type: automlTaskType(entry.taskType),
+      },
+    }));
     setVersionOptions(options);
     setDatasetVersionId((current) =>
       options.some(({ version }) => version.id === current)
@@ -281,10 +306,10 @@ export function TrainingWorkbench() {
   }, [requestedDatasetVersionId]);
 
   useEffect(() => {
-    void Promise.all([catalogApi.listWorkspaces(), catalogApi.listTrainingEngines()])
-      .then(async ([workspaces, nextEngines]) => {
+    void Promise.all([catalogApi.listWorkspaces(), listAutomlPlatformOptions().catch(() => [])])
+      .then(async ([workspaces, nextPlatformOptions]) => {
+        setPlatformOptions(nextPlatformOptions);
         const selectedWorkspace = workspaces[0] ?? null;
-        setEngines(nextEngines);
         setWorkspace(selectedWorkspace);
         if (!selectedWorkspace) return;
         const projects = await catalogApi.listProjects(selectedWorkspace.id);
@@ -326,46 +351,72 @@ export function TrainingWorkbench() {
     );
   }, [acceptanceOptions]);
 
+  // 解析固定参数在平台 Schema 里的真实参数键与定义（如 image_size → imgsz）
+  function resolveSchemaProperty(
+    option: AutomlPlatformOption | null,
+    aliases: readonly string[],
+  ): { key: string; property: AutomlPlatformConfigProperty } | null {
+    const properties = option?.configSchemaJson?.properties ?? {};
+    for (const alias of aliases) {
+      const property = properties[alias];
+      if (property) return { key: alias, property };
+    }
+    return null;
+  }
+
+  function schemaEnumValues(property: AutomlPlatformConfigProperty | null | undefined): number[] | null {
+    const values = property?.enum?.filter((value): value is number => typeof value === "number");
+    return values?.length ? values : null;
+  }
+
+  // 参数预填：平台 Schema default ⊕ 基础模型 defaultConfigJson 覆盖（契约 §8.3）
+  function applyParameterDefaults(option: AutomlPlatformOption | null, baseModel: AutomlBaseModel | null) {
+    setParams((current) => {
+      const next = { ...current };
+      for (const field of trainingParamFields) {
+        const resolved = resolveSchemaProperty(option, field.aliases);
+        const overlay = field.aliases
+          .map((alias) => baseModel?.defaultConfigJson?.[alias])
+          .find((value) => value !== undefined);
+        const raw = overlay ?? resolved?.property.default;
+        if (typeof raw !== "number" || !Number.isFinite(raw)) continue;
+        const enumValues = schemaEnumValues(resolved?.property);
+        next[field.key] = enumValues && !enumValues.includes(raw) ? enumValues[0] : raw;
+      }
+      return next;
+    });
+  }
+
   useEffect(() => {
-    if (!compatibleEngines.length || compatibleEngines.some((engine) => engine.key === engineKey)) return;
-    const nextEngine = compatibleEngines[0];
-    setEngineKey(nextEngine.key);
-    setModel(nextEngine.defaults.model);
-  }, [compatibleEngines, engineKey]);
+    if (!compatiblePlatforms.length || compatiblePlatforms.some((option) => String(option.platformId) === platformId)) return;
+    const first = compatiblePlatforms[0];
+    setPlatformId(String(first.platformId));
+    applyParameterDefaults(first, first.baseModels[0] ?? null);
+  }, [compatiblePlatforms, platformId]);
 
   async function submitTraining(event: FormEvent) {
     event.preventDefault();
-    if (!workspace || !project || !datasetVersionId || !selectedEngine) return;
+    if (!datasetVersionId || !selectedPlatform || !selectedBaseModel) return;
     setBusy(true);
     setError(null);
     setNotice(null);
-    idempotencyKey.current ??= crypto.randomUUID();
     try {
-      const run = await catalogApi.createTrainingRun(
-        workspace.id,
-        project.id,
-        idempotencyKey.current,
-        {
-          dataset_version_id: datasetVersionId,
-          engine: selectedEngine.key,
-          executor: selectedEngine.executor,
-          recipe: {
-            name: runName.trim(),
-            model,
-            task: selectedEngine.defaults.task,
-            epochs,
-            image_size: imageSize,
-            batch_size: batchSize,
-            seed,
-          },
-        },
-      );
-      idempotencyKey.current = null;
-      await refreshProjectState(workspace, project);
-      setNotice(run.reused ? "已恢复上次提交的训练任务" : "训练任务已进入队列");
+      // 超参按平台 Schema 声明的参数键提交（如 imgsz/batch），Schema 未声明的按本字段名
+      const hyperParamsJson: Record<string, unknown> = {};
+      for (const field of trainingParamFields) {
+        const resolved = resolveSchemaProperty(selectedPlatform, field.aliases);
+        hyperParamsJson[resolved?.key ?? field.key] = params[field.key];
+      }
+      const created = await createAutomlTrainingTask({
+        name: runName.trim(),
+        datasetVersionId,
+        baseModelId: selectedBaseModel.id,
+        hyperParamsJson,
+      });
+      setNotice(`训练任务「${created.name || created.taskCode}」已创建，请到「训练任务」页下发到设备`);
       exitCompose();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "训练任务提交失败");
+      setError(reason instanceof Error ? reason.message : "训练任务创建失败");
     } finally {
       setBusy(false);
     }
@@ -497,7 +548,10 @@ export function TrainingWorkbench() {
       ) : null}
 
       {activeTab === "training" ? (
-      <div className={`training-primary-grid${composing ? " is-compose" : ""}`}>
+      <div
+        className="training-primary-grid"
+        style={composing ? { gridTemplateColumns: "minmax(0, 1fr)" } : undefined}
+      >
         <form className="panel training-config-card" id="new-training" onSubmit={(event) => void submitTraining(event)}>
           {!composing ? (
           <div className="training-card-heading">
@@ -508,14 +562,14 @@ export function TrainingWorkbench() {
           </div>
           ) : null}
 
-          {versionOptions.length && compatibleEngines.length ? (
+          {versionOptions.length && compatiblePlatforms.length ? (
             <div className="training-form-grid">
               <label className="training-field training-field-wide">
                 <span>训练名称</span>
                 <input
                   value={runName}
                   onChange={(event) => setRunName(event.target.value)}
-                  placeholder="例如：PPE yolo11s 首轮训练"
+                  placeholder="例如：PPE yolo26s 首轮训练"
                   required
                 />
               </label>
@@ -524,39 +578,82 @@ export function TrainingWorkbench() {
                 <select value={datasetVersionId} onChange={(event) => setDatasetVersionId(event.target.value)}>
                   {versionOptions.map(({ dataset, version }) => (
                     <option value={version.id} key={version.id}>
-                      {dataset.name} · ds_v{version.version_number} · {version.asset_count} 个资产
+                      {dataset.name} · v{version.version_number} · {version.asset_count} 个样本 · 已上架
                     </option>
                   ))}
                 </select>
               </label>
               <label className="training-field">
-                <span>训练引擎</span>
+                <span>训练平台</span>
                 <select
-                  value={engineKey}
+                  value={platformId}
                   onChange={(event) => {
-                    const nextEngine = compatibleEngines.find((engine) => engine.key === event.target.value);
-                    setEngineKey(event.target.value);
-                    if (nextEngine) setModel(nextEngine.defaults.model);
+                    const nextPlatform = compatiblePlatforms.find(
+                      (option) => String(option.platformId) === event.target.value,
+                    );
+                    setPlatformId(event.target.value);
+                    setBaseModelId("");
+                    applyParameterDefaults(nextPlatform ?? null, nextPlatform?.baseModels[0] ?? null);
                   }}
                 >
-                  {compatibleEngines.map((engine) => <option value={engine.key} key={engine.key}>{engine.label}</option>)}
+                  {compatiblePlatforms.map((option) => (
+                    <option value={String(option.platformId)} key={String(option.platformId)}>
+                      {option.name}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label className="training-field">
                 <span>基础模型</span>
-                <select value={model} onChange={(event) => setModel(event.target.value)}>
-                  {(selectedEngine?.models ?? []).map((item) => <option value={item} key={item}>{item}</option>)}
+                <select
+                  value={String(selectedBaseModel?.id ?? "")}
+                  disabled={!selectedPlatform?.baseModels.length}
+                  onChange={(event) => {
+                    setBaseModelId(event.target.value);
+                    const nextModel = selectedPlatform?.baseModels.find(
+                      (model) => String(model.id) === event.target.value,
+                    );
+                    applyParameterDefaults(selectedPlatform, nextModel ?? null);
+                  }}
+                >
+                  {!selectedPlatform?.baseModels.length ? <option value="">该平台暂无基础模型</option> : null}
+                  {selectedPlatform?.baseModels.map((model) => (
+                    <option value={String(model.id)} key={String(model.id)}>
+                      {model.name}（{model.modelCode}）
+                    </option>
+                  ))}
                 </select>
               </label>
-              <label className="training-field"><span>训练轮次</span><input type="number" min="1" max="500" value={epochs} onChange={(event) => setEpochs(Number(event.target.value))} /></label>
-              <label className="training-field"><span>图像尺寸</span><input type="number" min="320" max="1536" step="32" value={imageSize} onChange={(event) => setImageSize(Number(event.target.value))} /></label>
-              <label className="training-field"><span>批量大小</span><input type="number" min="1" max="256" value={batchSize} onChange={(event) => setBatchSize(Number(event.target.value))} /></label>
-              <label className="training-field"><span>随机种子</span><input type="number" min="0" value={seed} onChange={(event) => setSeed(Number(event.target.value))} /></label>
+              {trainingParamFields.map((field) => {
+                const resolved = resolveSchemaProperty(selectedPlatform, field.aliases);
+                const enumValues = schemaEnumValues(resolved?.property);
+                return (
+                  <label className="training-field" key={field.key}>
+                    <span>{typeof resolved?.property.title === "string" && resolved.property.title ? resolved.property.title : field.label}</span>
+                    {enumValues ? (
+                      <select
+                        value={params[field.key]}
+                        onChange={(event) => setParams((current) => ({ ...current, [field.key]: Number(event.target.value) }))}
+                      >
+                        {enumValues.map((value) => <option value={value} key={value}>{value}</option>)}
+                      </select>
+                    ) : (
+                      <input
+                        type="number"
+                        min={String(resolved?.property.minimum ?? field.min)}
+                        max={String(resolved?.property.maximum ?? field.max)}
+                        value={params[field.key]}
+                        onChange={(event) => setParams((current) => ({ ...current, [field.key]: Number(event.target.value) }))}
+                      />
+                    )}
+                  </label>
+                );
+              })}
             </div>
           ) : (
             <div className="training-inline-empty">
               <Database size={18} />
-              <div><strong>{versionOptions.length ? "当前任务类型暂未接入训练引擎" : "尚无可训练的数据版本"}</strong><span>{versionOptions.length ? `当前为${selectedTaskType}，请先接入匹配的训练引擎。` : "先导入资产并冻结数据版本。"}</span></div>
+              <div><strong>{versionOptions.length ? "当前任务类型暂未接入训练平台" : "尚无已上架的数据版本"}</strong><span>{versionOptions.length ? `当前为${selectedTaskType}，请先在训练平台维护支持该类型的主数据。` : "先在「数据与标注」把处理完成的版本发布到数据市场，再回来发起训练。"}</span></div>
               <Link href={`/studio/data?project=${project.id}`}>前往数据</Link>
             </div>
           )}
@@ -568,7 +665,7 @@ export function TrainingWorkbench() {
               </button>
             ) : null}
             <span><ShieldCheck size={14} />SenseMu 提供训练环境 · 费用功能尚未开通</span>
-            <button className="primary-button" type="submit" disabled={busy || !datasetVersionId || !runName.trim()}>
+            <button className="primary-button" type="submit" disabled={busy || !datasetVersionId || !runName.trim() || !selectedBaseModel}>
               {busy ? <LoaderCircle size={14} className="spinner" /> : <Play size={14} fill="currentColor" />}
               提交训练
             </button>

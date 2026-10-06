@@ -22,7 +22,7 @@ test.describe("托管演示站", () => {
     ).toBeVisible();
   });
 
-  test("训练报告和实时分析边界与演示数据一致", async ({ page }) => {
+  test("训练报告与部署总览边界与演示数据一致", async ({ page }) => {
     await page.goto(`/studio/training?project=${ppeProject}`);
     await expect(page.getByRole("heading", { name: "训练任务" })).toBeVisible();
     await expect(page.getByText("模型对比", { exact: true })).toBeVisible();
@@ -31,25 +31,11 @@ test.describe("托管演示站", () => {
     await expect(page.getByText("训练曲线", { exact: true })).toBeVisible();
     await expect(page.getByLabel(/训练曲线/)).toBeVisible();
 
-    await page.goto(`/services?project=${ppeProject}&view=live&deployment=demo-deployment-ppe`);
-    await expect(page.getByRole("heading", { name: "实时分析" })).toBeVisible();
-    await expect(page.getByRole("button", { name: /多模态大模型/ })).toBeDisabled();
-    await expect(page.getByRole("button", { name: /实时视频流/ })).toBeDisabled();
-  });
-
-  test("展开侧栏时实时分析会在窄内容区收敛", async ({ page }) => {
-    await page.setViewportSize({ width: 702, height: 900 });
-    await page.goto(`/services?project=${ppeProject}&view=live&deployment=demo-deployment-ppe`);
-
-    const analysis = page.locator("#live-analysis");
-    await expect(analysis.getByRole("heading", { name: "实时分析" })).toBeVisible();
-    await expect(analysis.locator(".inference-tester-heading")).toHaveCSS("flex-direction", "column");
-    const optionColumns = await analysis.locator(".live-analysis-option-group > div").first().evaluate(
-      (element) => getComputedStyle(element).gridTemplateColumns.split(" ").filter(Boolean).length,
-    );
-    expect(optionColumns).toBe(1);
-    await expect(analysis.getByRole("button", { name: /视觉小模型/ })).toBeVisible();
-    await expect(analysis.getByRole("button", { name: /多模态大模型/ })).toBeVisible();
+    // 部署总览在演示环境没有真实后端：渲染页面骨架并给出连接引导
+    await page.goto("/services");
+    await expect(page.getByRole("heading", { name: "运行服务" })).toBeVisible();
+    await expect(page.getByRole("tab", { name: /部署记录/ })).toBeVisible();
+    await expect(page.getByText("部署服务尚未连接")).toBeVisible();
   });
 
   test("算法市场筛选不会破坏商品发现", async ({ page }) => {

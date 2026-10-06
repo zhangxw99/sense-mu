@@ -6,17 +6,19 @@ import {
   Bell,
   Boxes,
   ChevronDown,
+  Cpu,
   Database,
   FolderKanban,
+  Layers,
   LayoutDashboard,
   MoreHorizontal,
   Plus,
-  Power,
   RefreshCw,
   Rocket,
   Search,
   ShieldAlert,
   Store,
+  Tags,
   Trash2,
   UserRound,
   X,
@@ -30,7 +32,6 @@ import {
   catalogApi,
   CatalogApiError,
   type CurrentIdentity,
-  type Deployment,
   type Project,
 } from "../../lib/catalog-api";
 import {
@@ -40,6 +41,13 @@ import {
   deleteAutomlDataset,
   listAutomlDatasets,
 } from "../../lib/automl-data-api";
+import {
+  AUTOML_TRAINING_TASKS_CHANGED_EVENT,
+  deleteAutomlTrainingTask,
+  listAutomlTrainingTasks,
+  type AutomlTrainingTask,
+} from "../../lib/automl-training-api";
+import { listAutomlDeployments } from "../../lib/automl-device-api";
 import { getAuthLoginHref, getWebAuthConfig } from "../../lib/auth-config";
 import { isHostedPreview } from "../../lib/preview-mock-api";
 import {
@@ -76,6 +84,10 @@ function syncSidebarPresentation(width: number) {
 export type ProductArea =
   | "overview"
   | "studio"
+  | "devices"
+  | "training-platforms"
+  | "constants"
+  | "training-tasks"
   | "algorithm-market"
   | "data-market"
   | "services"
@@ -93,10 +105,23 @@ type NavigationItem = {
 
 const navigationGroups: Array<{ label: string; items: NavigationItem[] }> = [
   {
+    label: "设备",
+    items: [
+      { label: "边缘设备", icon: Cpu, area: "devices", href: "/devices" },
+    ],
+  },
+  {
     label: "市场",
     items: [
       { label: "算法市场", icon: Store, area: "algorithm-market", href: "/marketplace" },
       { label: "数据市场", icon: Boxes, area: "data-market", href: "/data-market" },
+    ],
+  },
+  {
+    label: "平台",
+    items: [
+      { label: "训练平台", icon: Layers, area: "training-platforms", href: "/training-platforms" },
+      { label: "常量管理", icon: Tags, area: "constants", href: "/constants" },
     ],
   },
   {
@@ -109,20 +134,18 @@ type WorkbenchGroupKey = "annotate" | "train" | "deploy";
 
 type WorkbenchResources = {
   projects: Array<Project & { modelCount: number }>;
-  deployments: Array<Deployment & { projectName: string }>;
 };
 
 type WorkbenchResourceLoadError = "unavailable" | "permission_denied";
 
 const emptyWorkbenchResources: WorkbenchResources = {
   projects: [],
-  deployments: [],
 };
 
 type ResourceAction =
   | { kind: "dataset"; id: string; name: string }
   | { kind: "project"; id: string; name: string }
-  | { kind: "deployment"; id: string; name: string; projectId: string };
+  | { kind: "training-task"; id: string; name: string };
 
 function defaultWorkbenchGroups(pathname: string): Record<WorkbenchGroupKey, boolean> {
   if (pathname.startsWith("/studio/data")) {
@@ -130,6 +153,9 @@ function defaultWorkbenchGroups(pathname: string): Record<WorkbenchGroupKey, boo
   }
   if (pathname.startsWith("/services")) {
     return { annotate: false, train: false, deploy: true };
+  }
+  if (pathname.startsWith("/training-tasks")) {
+    return { annotate: false, train: true, deploy: false };
   }
   if (pathname.startsWith("/studio")) {
     return { annotate: false, train: true, deploy: false };
@@ -151,14 +177,17 @@ function Navigation({
   identity,
   resources,
   automlDatasets,
+  trainingTasks,
+  onRefreshTrainingTasks,
+  deploymentCount,
   resourceLoadError,
   onRefreshResources,
   onRefreshAutomlDatasets,
   expandedGroups,
   onToggleGroup,
   onDeleteDataset,
+  onDeleteTrainingTask,
   onArchiveProject,
-  onDisableDeployment,
 }: {
   active: ProductArea;
   collapsed: boolean;
@@ -173,14 +202,18 @@ function Navigation({
   identity: CurrentIdentity | null;
   resources: WorkbenchResources;
   automlDatasets: AutomlDataset[];
+  trainingTasks: AutomlTrainingTask[];
+  onRefreshTrainingTasks: () => void;
+  /** 运行中的部署服务数（§6.11.2 ACTIVE 口径，每设备最新激活去重） */
+  deploymentCount: number | null;
   resourceLoadError: WorkbenchResourceLoadError | null;
   onRefreshResources: () => void;
   onRefreshAutomlDatasets: () => void;
   expandedGroups: Record<WorkbenchGroupKey, boolean>;
   onToggleGroup: (group: WorkbenchGroupKey) => void;
   onDeleteDataset: (dataset: AutomlDataset) => void;
+  onDeleteTrainingTask: (task: AutomlTrainingTask) => void;
   onArchiveProject: (project: Project) => void;
-  onDisableDeployment: (deployment: Deployment) => void;
 }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -192,9 +225,6 @@ function Navigation({
   const addDatasetHref = "/studio/data?createDataset=1";
   const addTrainingHref = currentProject
     ? `/studio/training?project=${encodeURIComponent(currentProject.id)}&compose=1#new-training`
-    : "/studio/data?createProject=1";
-  const addDeploymentHref = currentProject
-    ? `/services?project=${encodeURIComponent(currentProject.id)}&view=publish#publish-service`
     : "/studio/data?createProject=1";
   const roleLabels = {
     owner: "所有者",
@@ -349,13 +379,67 @@ function Navigation({
               group="train"
               label="训练"
               icon={FolderKanban}
-              count={resources.projects.length}
+              count={trainingTasks.length || resources.projects.length}
               expanded={expandedGroups.train}
               onToggle={onToggleGroup}
               addHref={addTrainingHref}
               addLabel={currentProject ? "新建训练" : "新建项目"}
               onMobileClose={onMobileClose}
             >
+              {/* 动态训练任务：进行中优先，点开直达详情；「训练任务」入口进完整列表 */}
+              {trainingTasks.length ? [...trainingTasks]
+                .sort((left, right) => {
+                  const activeStatuses = new Set(["QUEUED", "SCHEDULED", "RUNNING"]);
+                  const leftActive = activeStatuses.has(left.statusCd) ? 0 : 1;
+                  const rightActive = activeStatuses.has(right.statusCd) ? 0 : 1;
+                  return leftActive - rightActive
+                    || (Number(right.progress) || 0) - (Number(left.progress) || 0);
+                })
+                .slice(0, 6)
+                .map((task) => {
+                  const selected = pathname === `/training-tasks/${task.id}`;
+                  return (
+                    <div className={`workbench-resource-row${selected ? " is-current" : ""}`} key={`task-${task.id}`}>
+                      <Link
+                        className="workbench-resource-link"
+                        href={`/training-tasks/${task.id}`}
+                        title={`${task.name}（${task.statusCd}）`}
+                        onClick={onMobileClose}
+                      >
+                        <span
+                          className="workbench-task-dot"
+                          data-status={task.statusCd}
+                          aria-hidden="true"
+                        />
+                        <span>{task.name}</span>
+                        <small>{Number(task.progress) || 0}%</small>
+                      </Link>
+                      {task.statusCd !== "RUNNING" && task.statusCd !== "SCHEDULED" ? (
+                        <button
+                          className="workbench-resource-action is-danger"
+                          type="button"
+                          aria-label={`删除训练任务 ${task.name}`}
+                          title="删除训练任务"
+                          onClick={() => { onMobileClose(); onDeleteTrainingTask(task); }}
+                        >
+                          <Trash2 size={13} aria-hidden="true" />
+                        </button>
+                      ) : null}
+                    </div>
+                  );
+                }) : null}
+              <div className={`workbench-resource-row${active === "training-tasks" ? " is-current" : ""}`}>
+                <Link
+                  className="workbench-resource-link"
+                  href="/training-tasks"
+                  title="训练任务"
+                  onClick={onMobileClose}
+                >
+                  <span className="workbench-resource-mark is-project">训</span>
+                  <span>全部训练任务</span>
+                  <small>{trainingTasks.length || ""}</small>
+                </Link>
+              </div>
               {resourceLoadError && !resources.projects.length ? <span className="workbench-resource-empty">{resourceAlert.emptyLabel}</span> : resources.projects.length ? resources.projects.map((project) => {
                 const selected = (pathname === "/studio" || pathname.startsWith("/studio/training"))
                   && selectedProjectId === project.id;
@@ -387,42 +471,24 @@ function Navigation({
 
             <WorkbenchNavigationGroup
               group="deploy"
-              label="发布"
+              label="部署"
               icon={Rocket}
-              count={resources.deployments.length}
+              count={deploymentCount ?? 0}
               expanded={expandedGroups.deploy}
               onToggle={onToggleGroup}
-              addHref={addDeploymentHref}
-              addLabel={currentProject ? "发布服务" : "新建项目"}
               onMobileClose={onMobileClose}
             >
-              {resourceLoadError && !resources.deployments.length ? <span className="workbench-resource-empty">{resourceAlert.emptyLabel}</span> : resources.deployments.length ? resources.deployments.map((deployment) => {
-                const selected = pathname === "/services" && selectedProjectId === deployment.project_id;
-                return (
-                  <div className={`workbench-resource-row${selected ? " is-current" : ""}`} key={deployment.id}>
-                    <Link
-                      className="workbench-resource-link"
-                      href={`/services?project=${encodeURIComponent(deployment.project_id)}&view=live&deployment=${encodeURIComponent(deployment.id)}`}
-                      title={`${deployment.projectName} · ${deployment.name}`}
-                      onClick={onMobileClose}
-                    >
-                      <span className="workbench-resource-status" data-status={deployment.status} aria-hidden="true" />
-                      <span>{deployment.name}</span>
-                    </Link>
-                    {deployment.status === "published" ? (
-                      <button
-                        className="workbench-resource-action"
-                        type="button"
-                        aria-label={`停用服务 ${deployment.name}`}
-                        title="停用服务"
-                        onClick={() => { onMobileClose(); onDisableDeployment(deployment); }}
-                      >
-                        <Power size={13} aria-hidden="true" />
-                      </button>
-                    ) : null}
-                  </div>
-                );
-              }) : <span className="workbench-resource-empty">暂无在线服务</span>}
+              <div className="workbench-resource-row">
+                <Link
+                  className="workbench-resource-link"
+                  href="/services"
+                  title="运行服务"
+                  onClick={onMobileClose}
+                >
+                  <span className="workbench-resource-mark is-project">运</span>
+                  <span>运行服务</span>
+                </Link>
+              </div>
             </WorkbenchNavigationGroup>
           </div>
           <div className="workbench-collapsed-shortcuts" aria-label="工作台快捷入口">
@@ -444,8 +510,8 @@ function Navigation({
             </button>
             <button
               type="button"
-              aria-label="发布"
-              title="发布"
+              aria-label="部署"
+              title="部署"
               onClick={() => onToggleGroup("deploy")}
             >
               <Rocket size={15} strokeWidth={1.8} aria-hidden="true" />
@@ -513,11 +579,13 @@ function WorkbenchNavigationGroup({
   group: WorkbenchGroupKey;
   label: string;
   icon: LucideIcon;
-  count: number;
+  // 单入口分组（如部署）没有计数，缺省时隐藏数字
+  count?: number;
   expanded: boolean;
   onToggle: (group: WorkbenchGroupKey) => void;
-  addHref: string;
-  addLabel: string;
+  // 设备等自注册资源没有「新建」动作，addHref 缺省时隐藏 + 按钮
+  addHref?: string;
+  addLabel?: string;
   onMobileClose: () => void;
   children: ReactNode;
 }) {
@@ -533,18 +601,20 @@ function WorkbenchNavigationGroup({
         >
           <Icon size={14} strokeWidth={1.8} aria-hidden="true" />
           <span>{label}</span>
-          <small>{count}</small>
+          {count != null ? <small>{count}</small> : null}
           <ChevronDown size={13} aria-hidden="true" />
         </button>
-        <Link
-          className="workbench-navigation-add"
-          href={addHref}
-          aria-label={addLabel}
-          title={addLabel}
-          onClick={onMobileClose}
-        >
-          <Plus size={14} strokeWidth={2} aria-hidden="true" />
-        </Link>
+        {addHref ? (
+          <Link
+            className="workbench-navigation-add"
+            href={addHref}
+            aria-label={addLabel}
+            title={addLabel}
+            onClick={onMobileClose}
+          >
+            <Plus size={14} strokeWidth={2} aria-hidden="true" />
+          </Link>
+        ) : null}
       </div>
       <div className="workbench-resource-list" id={`workbench-navigation-${group}`} hidden={!expanded}>
         {children}
@@ -629,6 +699,8 @@ export function ProductShell({
   const [previewMode, setPreviewMode] = useState(false);
   const [workbenchResources, setWorkbenchResources] = useState<WorkbenchResources>(emptyWorkbenchResources);
   const [automlDatasets, setAutomlDatasets] = useState<AutomlDataset[]>([]);
+  const [deploymentCount, setDeploymentCount] = useState<number | null>(null);
+  const [trainingTasks, setTrainingTasks] = useState<AutomlTrainingTask[]>([]);
   const [workbenchWorkspaceId, setWorkbenchWorkspaceId] = useState<string | null>(null);
   const [resourceLoadError, setResourceLoadError] = useState<WorkbenchResourceLoadError | null>(null);
   const [expandedWorkbenchGroups, setExpandedWorkbenchGroups] = useState<Record<WorkbenchGroupKey, boolean>>(
@@ -647,6 +719,10 @@ export function ProductShell({
   } | null>(null);
   const resolvedSidebarWidth = sidebarWidth ?? SIDEBAR_DEFAULT_WIDTH;
   const sidebarCollapsed = resolvedSidebarWidth < SIDEBAR_MIN_EXPANDED_WIDTH;
+  // /training-tasks 前缀（含 [taskId] 详情页）统一高亮「训练任务」入口
+  const activeArea: ProductArea = pathname.startsWith("/training-tasks")
+    ? "training-tasks"
+    : active;
   const webAuthConfig = getWebAuthConfig();
   const authLoginHref = getAuthLoginHref(
     webAuthConfig.loginUrl,
@@ -739,19 +815,12 @@ export function ProductShell({
       }
       const projects = await catalogApi.listProjects(workspace.id);
       const groups = await Promise.all(projects.map(async (project) => {
-        const [deployments, models] = await Promise.all([
-          catalogApi.listDeployments(workspace.id, project.id),
-          catalogApi.listModelVersions(workspace.id, project.id),
-        ]);
-        return {
-          project: { ...project, modelCount: models.length },
-          deployments: deployments.map((deployment) => ({ ...deployment, projectName: project.name })),
-        };
+        const models = await catalogApi.listModelVersions(workspace.id, project.id);
+        return { project: { ...project, modelCount: models.length } };
       }));
       if (!isCurrentRequest()) return;
       setWorkbenchResources({
         projects: groups.map((group) => group.project),
-        deployments: groups.flatMap((group) => group.deployments),
       });
       setWorkbenchWorkspaceId(workspace.id);
       setResourceLoadError(null);
@@ -782,19 +851,54 @@ export function ProductShell({
     }
   }, []);
 
+  const refreshTrainingTasks = useCallback(async () => {
+    try {
+      const page = await listAutomlTrainingTasks({ page: 1, limit: 8 });
+      setTrainingTasks(page.rows);
+    } catch {
+      setTrainingTasks([]);
+    }
+  }, []);
+
   useEffect(() => {
     void refreshWorkbenchResources();
   }, [refreshWorkbenchResources]);
 
   useEffect(() => {
     void refreshAutomlDatasets();
+    void refreshTrainingTasks();
     window.addEventListener(AUTOML_TOKEN_CHANGED_EVENT, refreshAutomlDatasets);
     window.addEventListener(AUTOML_DATASETS_CHANGED_EVENT, refreshAutomlDatasets);
+    window.addEventListener(AUTOML_TRAINING_TASKS_CHANGED_EVENT, refreshTrainingTasks);
     return () => {
       window.removeEventListener(AUTOML_TOKEN_CHANGED_EVENT, refreshAutomlDatasets);
       window.removeEventListener(AUTOML_DATASETS_CHANGED_EVENT, refreshAutomlDatasets);
+      window.removeEventListener(AUTOML_TRAINING_TASKS_CHANGED_EVENT, refreshTrainingTasks);
     };
-  }, [refreshAutomlDatasets]);
+  }, [refreshAutomlDatasets, refreshTrainingTasks]);
+
+  const refreshDeploymentCount = useCallback(async () => {
+    try {
+      // 运行中口径：ACTIVE 且每设备最新一次激活去重，total 即运行服务数
+      const page = await listAutomlDeployments({ page: 1, limit: 1, statusCd: "ACTIVE" });
+      setDeploymentCount(Number(page.total) || 0);
+    } catch {
+      // 后端不可用时保持上次值
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshDeploymentCount();
+    window.addEventListener(AUTOML_TOKEN_CHANGED_EVENT, refreshDeploymentCount);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      void refreshDeploymentCount();
+    }, 30_000);
+    return () => {
+      window.removeEventListener(AUTOML_TOKEN_CHANGED_EVENT, refreshDeploymentCount);
+      window.clearInterval(timer);
+    };
+  }, [refreshDeploymentCount]);
 
   useEffect(() => {
     setExpandedWorkbenchGroups(defaultWorkbenchGroups(pathname));
@@ -825,7 +929,7 @@ export function ProductShell({
   async function confirmResourceAction() {
     const action = pendingResourceAction;
     if (!action) return;
-    if (action.kind !== "dataset" && !workbenchWorkspaceId) {
+    if (action.kind !== "dataset" && action.kind !== "training-task" && !workbenchWorkspaceId) {
       setResourceActionError("未找到当前工作区，请刷新后重试");
       return;
     }
@@ -838,13 +942,17 @@ export function ProductShell({
         if (selectedDatasetId === action.id) {
           router.replace("/studio/data");
         }
+      } else if (action.kind === "training-task") {
+        // deleteAutomlTrainingTask 内部派发联动事件：侧栏与打开中的任务列表页都会刷新
+        await deleteAutomlTrainingTask(action.id);
+        if (pathname === `/training-tasks/${action.id}`) {
+          router.replace("/training-tasks");
+        }
       } else if (action.kind === "project") {
         await catalogApi.archiveProject(workbenchWorkspaceId!, action.id);
         if (selectedProjectId === action.id) {
           router.replace("/");
         }
-      } else {
-        await catalogApi.disableDeployment(workbenchWorkspaceId!, action.id);
       }
       await refreshWorkbenchResources();
       if (action.kind === "dataset") {
@@ -866,17 +974,17 @@ export function ProductShell({
       detail: "删除后数据集的版本、样本、标注和标注任务一并移除，无法恢复。已被训练任务引用的数据集不能删除。",
       Icon: Trash2,
     },
+    "training-task": {
+      title: "删除训练任务",
+      confirm: "删除训练任务",
+      detail: "删除后任务的指标、事件与产物清单一并清除，且不可恢复；已发布为模型版本的任务不可删除。",
+      Icon: Trash2,
+    },
     project: {
       title: "归档项目",
       confirm: "归档项目",
       detail: "归档后项目会从工作台列表移除。仍在运行的任务或在线服务需要先处理。",
       Icon: Archive,
-    },
-    deployment: {
-      title: "停用服务",
-      confirm: "停用服务",
-      detail: "停用后该服务不再接收新的调用，可在发布页重新启用。",
-      Icon: Power,
     },
   }[pendingResourceAction.kind] : null;
 
@@ -984,7 +1092,7 @@ export function ProductShell({
     >
       <div className="ambient-glow" aria-hidden="true" />
       <Navigation
-        active={active}
+        active={activeArea}
         collapsed={sidebarCollapsed}
         dragging={sidebarDragging}
         width={resolvedSidebarWidth}
@@ -997,8 +1105,15 @@ export function ProductShell({
         identity={identity}
         resources={workbenchResources}
         automlDatasets={automlDatasets}
+        deploymentCount={deploymentCount}
+          trainingTasks={trainingTasks}
+          onRefreshTrainingTasks={refreshTrainingTasks}
         resourceLoadError={resourceLoadError}
-        onRefreshResources={() => void refreshWorkbenchResources()}
+        onRefreshResources={() => {
+          void refreshWorkbenchResources();
+          void refreshTrainingTasks();
+          void refreshAutomlDatasets();
+        }}
         onRefreshAutomlDatasets={() => void refreshAutomlDatasets()}
         expandedGroups={expandedWorkbenchGroups}
         onToggleGroup={toggleWorkbenchGroup}
@@ -1007,16 +1122,15 @@ export function ProductShell({
           id: String(dataset.id),
           name: dataset.name,
         })}
+        onDeleteTrainingTask={(task) => requestResourceAction({
+          kind: "training-task",
+          id: String(task.id),
+          name: task.name || task.taskCode,
+        })}
         onArchiveProject={(project) => requestResourceAction({
           kind: "project",
           id: project.id,
           name: project.name,
-        })}
-        onDisableDeployment={(deployment) => requestResourceAction({
-          kind: "deployment",
-          id: deployment.id,
-          name: deployment.name,
-          projectId: deployment.project_id,
         })}
       />
       <button

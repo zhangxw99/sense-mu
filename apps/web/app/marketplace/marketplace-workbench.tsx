@@ -15,6 +15,12 @@ import {
   type MarketplaceSubscription,
   type Workspace,
 } from "../../lib/catalog-api";
+import {
+  type AutomlAlgorithmMarketListing,
+  getAutomlFileUrls,
+  listAutomlAlgorithmMarketListings,
+} from "../../lib/automl-data-api";
+import { automlTaskType } from "../data-market/data-market-workbench";
 
 export const taskLabels: Record<string, string> = {
   "object-detection": "目标检测",
@@ -43,6 +49,63 @@ function getListingEnvironments(listing: AlgorithmCatalogItem): string[] {
   ].filter((item): item is string => Boolean(item));
 }
 
+// 训练最终指标里挑展示项（键为 ultralytics 原始名）
+export function pickAlgorithmMetrics(metrics: Record<string, number> | null): { label: string; value: string }[] {
+  if (!metrics) return [];
+  const pick = [
+    { key: "metrics/mAP50(B)", label: "mAP50" },
+    { key: "metrics/mAP50-95(B)", label: "mAP50-95" },
+    { key: "metrics/precision(B)", label: "精确率" },
+    { key: "metrics/recall(B)", label: "召回率" },
+  ];
+  return pick
+    .filter((item) => typeof metrics[item.key] === "number")
+    .map((item) => ({ label: item.label, value: `${Math.round(metrics[item.key] * 100)}%` }));
+}
+
+// AutoML 上架模型 → 市场卡片形状（id = automl-{modelId}，详情页按此前缀解析）
+export const toAlgorithmListing = (entry: AutomlAlgorithmMarketListing): AlgorithmCatalogItem => ({
+  id: `automl-${entry.modelId}`,
+  provider_workspace_id: "automl",
+  provider_name: "AutoML 训练发布",
+  deployment_id: `automl-${entry.modelId}`,
+  capability_spec_id: null,
+  capability_slug: null,
+  capability_version_number: entry.versionCount,
+  capability_display_name: entry.name,
+  capability_problem_definition: entry.taskType,
+  capability_output_contract: "detections.v1",
+  capability_verified_scenes: entry.classNames ?? [],
+  capability_unsupported_conditions: [],
+  endpoint_url: "/v1/detect",
+  model_name: entry.name,
+  model_version_number: Number(String(entry.version).replace(/[^0-9]/g, "")) || 1,
+  task_type: automlTaskType(entry.taskType),
+  title: entry.name,
+  summary: entry.description?.trim() || `AutoML 发布模型 · ${entry.modelCode} · ${entry.version}`,
+  category: entry.scene ?? "通用场景",
+  pricing_unit: "免费",
+  price_per_1000_cents: 0,
+  monthly_quota_units: 0,
+  status: "published",
+  published_at: entry.listedAt,
+  subscription_id: null,
+  subscription_status: null,
+  remaining_units: null,
+  is_valid: entry.isValid,
+  is_available: true,
+  metrics: pickAlgorithmMetrics(entry.metrics),
+  classes: entry.classNames ?? [],
+  model_architecture: entry.modelCode,
+  input_size: "以模型清单为准",
+  latency_p95: "设备端实测",
+  is_mock: false,
+  // studio 非场景枚举值：getCatalogSceneImage 返回 null，组件回退无图占位；有封面时由 image_url 覆盖
+  preview: { scene: "studio", alt: entry.name, boxes: [] } as unknown as AlgorithmCatalogItem["preview"],
+  evaluation_basis: "训练任务最终 val 指标",
+  updated_label: entry.listedAt ? entry.listedAt.slice(0, 10) : "近期发布",
+});
+
 export function MarketplaceWorkbench({ previewMode }: { previewMode: boolean }) {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -64,30 +127,41 @@ export function MarketplaceWorkbench({ previewMode }: { previewMode: boolean }) 
   }, []);
 
   useEffect(() => {
-    void Promise.all([
-      catalogApi.listPublicMarketplaceListings(),
-      catalogApi.listWorkspaces().catch(() => [] as Workspace[]),
-    ])
-      .then(async ([nextListings, nextWorkspaces]) => {
-        setListings(mergeAlgorithmListings(nextListings, previewMode));
-        setWorkspaces(nextWorkspaces);
-        const selected = nextWorkspaces[0]?.id ?? "";
-        setWorkspaceId(selected);
-        if (selected) {
-          try {
-            await loadWorkspace(selected);
-          } catch (reason) {
-            setError(reason instanceof Error ? reason.message : "工作区授权状态加载失败");
-          }
-        }
+    if (previewMode) {
+      void catalogApi.listPublicMarketplaceListings()
+        .then((nextListings) => setListings(mergeAlgorithmListings(nextListings, previewMode)))
+        .catch(() => {
+          setListings(MOCK_ALGORITHM_LISTINGS);
+          setError("服务暂不可用；当前显示示例商品。");
+        })
+        .finally(() => setLoading(false));
+      return;
+    }
+    // 算法市场数据源：AutoML 已上架模型（版本 APPROVED 即上架）
+    void listAutomlAlgorithmMarketListings()
+      .then(async (entries) => {
+        const items = mergeAlgorithmListings(entries.map(toAlgorithmListing), false);
+        setListings(items);
+        // 推理封面（训练任务产出）预签名 URL；无封面回退 CatalogPreview 场景图
+        const coverKeys = entries
+          .map((entry) => ({ id: `automl-${entry.modelId}`, key: entry.coverObjectKey }))
+          .filter((cover) => cover.key);
+        if (!coverKeys.length) return;
+        return getAutomlFileUrls(coverKeys.map((cover) => cover.key as string)).then((urls) => {
+          const urlByKey = new Map(urls.map((entry) => [entry.objectKey, entry.url]));
+          setListings((current) => current.map((item) => {
+            const cover = coverKeys.find((candidate) => candidate.id === item.id);
+            const url = cover ? urlByKey.get(cover.key as string) : null;
+            return url ? { ...item, preview: { ...item.preview, image_url: url } } : item;
+          }));
+        });
       })
       .catch((reason) => {
-        setListings(previewMode ? MOCK_ALGORITHM_LISTINGS : []);
-        const message = reason instanceof Error ? reason.message : "服务暂不可用";
-        setError(previewMode ? `${message}；当前显示示例商品。` : message);
+        setListings([]);
+        setError(reason instanceof Error ? reason.message : "服务暂不可用");
       })
       .finally(() => setLoading(false));
-  }, [loadWorkspace, previewMode]);
+  }, [previewMode]);
 
   const categories = useMemo(
     () => ["全部", ...Array.from(new Set(listings.map((listing) => taskLabels[listing.task_type] ?? listing.category)))],
@@ -238,7 +312,9 @@ export function MarketplaceWorkbench({ previewMode }: { previewMode: boolean }) 
                   <div><strong>{formatAlgorithmPrice(listing.price_per_1000_cents)}</strong><small>{listing.provider_name}</small></div>
                   <div className="storefront-card-actions">
                     <Link className="text-button compact" href={`/marketplace/${listing.id}`}>详情 <ArrowUpRight size={14} /></Link>
-                    {purchased || pending ? (
+                    {listing.id.startsWith("automl-") ? (
+                      <Link className="primary-button compact" href={`/marketplace/${listing.id}`}>部署</Link>
+                    ) : purchased || pending ? (
                       <Link className="secondary-button compact" href="/me?view=consumer">{purchased ? "已购买" : "查看订单"}</Link>
                     ) : !workspaces.length ? (
                       <Link className="secondary-button compact" href="/settings">创建工作区</Link>

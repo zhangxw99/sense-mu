@@ -11,9 +11,9 @@ import {
   ShieldCheck,
   UploadCloud,
 } from "lucide-react";
-import { type ChangeEvent, type CSSProperties, type SyntheticEvent, useMemo, useState } from "react";
-import { getCatalogSceneImage, getContainedFrameStyle, getCoverBoxStyle } from "../../components/catalog-preview";
-import type { AlgorithmCatalogItem } from "../../../lib/catalog-mock-data";
+import { type ChangeEvent, type CSSProperties, type SyntheticEvent, useEffect, useMemo, useRef, useState } from "react";
+import { getCatalogSceneImage, getCoverBoxStyle } from "./catalog-preview";
+import type { AlgorithmCatalogItem } from "../../lib/catalog-mock-data";
 
 type DemoSource = "sample" | "upload";
 type DemoCanvasStyle = CSSProperties & { "--algorithm-demo-image"?: string };
@@ -22,23 +22,77 @@ function directBoxStyle(box: AlgorithmCatalogItem["preview"]["boxes"][number]): 
   return { left: `${box.x}%`, top: `${box.y}%`, width: `${box.width}%`, height: `${box.height}%` };
 }
 
-export function AlgorithmLiveDemo({ listing }: { listing: AlgorithmCatalogItem }) {
+export type DemoRealBox = {
+  label: string;
+  confidence: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type DemoRealInference = {
+  modelName: string;
+  detect: (image: Blob, threshold: number) => Promise<DemoRealBox[]>;
+};
+
+export type DemoSampleOrigin = {
+  label: string;
+  source?: string | null;
+};
+
+export function AlgorithmLiveDemo({ listing, realInference, runDisabled, sampleOrigin }: { listing: AlgorithmCatalogItem; realInference?: DemoRealInference; runDisabled?: string; sampleOrigin?: DemoSampleOrigin }) {
   const [source, setSource] = useState<DemoSource>("sample");
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
   const [uploadedName, setUploadedName] = useState("");
   const [confidence, setConfidence] = useState(0.25);
   const [running, setRunning] = useState(false);
   const [hasResult, setHasResult] = useState(false);
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [realBoxes, setRealBoxes] = useState<DemoRealBox[] | null>(null);
+  const [realModelLabel, setRealModelLabel] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
   const [uploadedAspectRatio, setUploadedAspectRatio] = useState<number | null>(null);
+  // 样例图真实宽高比：img onLoad 时捕获，避免 frame 比例与图片不符导致检测框错位
+  const [sampleAspectRatio, setSampleAspectRatio] = useState<number | null>(null);
+  // 画布实测尺寸：frame 用像素级 contain 计算，不随响应式宽度失真（百分比方案在宽屏下比例错误）
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
+
+  useEffect(() => {
+    const element = canvasRef.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const rect = entries[0]?.contentRect;
+      if (rect) setCanvasSize({ width: rect.width, height: rect.height });
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
 
   const visibleBoxes = useMemo(
-    () => listing.preview.boxes.filter((box) => Number(box.confidence ?? 1) >= confidence),
-    [confidence, listing.preview.boxes],
+    () => {
+      if (realBoxes) {
+        // 真实推理框是归一化 0-1，directBoxStyle 按百分比定位，这里统一 ×100
+        return realBoxes
+          .filter((box) => box.confidence >= confidence)
+          .map((box) => ({
+            ...box,
+            x: box.x * 100,
+            y: box.y * 100,
+            width: box.width * 100,
+            height: box.height * 100,
+            confidence: box.confidence.toFixed(2),
+          }));
+      }
+      return listing.preview.boxes.filter((box) => Number(box.confidence ?? 1) >= confidence);
+    },
+    [confidence, listing.preview.boxes, realBoxes],
   );
   const sceneImage = getCatalogSceneImage(listing.preview.scene);
-  const sampleSourceRatio = Math.min(4, Math.max(0.25, listing.preview.aspect_ratio ?? sceneImage?.aspectRatio ?? 1));
+  const sampleSourceRatio = Math.min(4, Math.max(0.25, sampleAspectRatio
+    ?? listing.preview.aspect_ratio ?? sceneImage?.aspectRatio ?? 1));
   const demoFrameRatio = 16 / 10;
   const directSampleImage = listing.preview.image_url ?? sceneImage?.url;
   const activeImage = uploadedImage ?? directSampleImage;
@@ -47,10 +101,36 @@ export function AlgorithmLiveDemo({ listing }: { listing: AlgorithmCatalogItem }
     ? { "--algorithm-demo-image": `url("${activeImage}")` }
     : undefined;
 
+  // frame 尺寸：按画布实测像素做 contain（图片完整放进画布），检测框百分比相对 frame 才与图片对齐。
+  // 旧的百分比宽高方案（宽随画布宽、高随画布高）在非 16:10 画布上比例失真——宽屏下框整体错位。
+  const containedFrameStyle = useMemo<CSSProperties>(() => {
+    const boundedZoom = Math.min(1.4, Math.max(1, zoom));
+    if (!canvasSize.width || !canvasSize.height) {
+      return { visibility: "hidden" };
+    }
+    const canvasRatio = canvasSize.width / canvasSize.height;
+    let width: number;
+    let height: number;
+    if (activeSourceRatio < canvasRatio) {
+      height = canvasSize.height;
+      width = canvasSize.height * activeSourceRatio;
+    } else {
+      width = canvasSize.width;
+      height = canvasSize.width / activeSourceRatio;
+    }
+    return {
+      width: `${Math.round(width * boundedZoom)}px`,
+      height: `${Math.round(height * boundedZoom)}px`,
+      transform: "translate(-50%, -50%)",
+    };
+  }, [activeSourceRatio, canvasSize, zoom]);
+
   function chooseSample() {
     setSource("sample");
     setUploadedImage(null);
+    setUploadedFile(null);
     setUploadedName("");
+    setRealBoxes(null);
     setHasResult(false);
     setMessage(null);
     setZoom(1);
@@ -71,7 +151,9 @@ export function AlgorithmLiveDemo({ listing }: { listing: AlgorithmCatalogItem }
     reader.onload = () => {
       setSource("upload");
       setUploadedImage(String(reader.result));
+      setUploadedFile(file);
       setUploadedName(file.name);
+      setRealBoxes(null);
       setUploadedAspectRatio(null);
       setHasResult(false);
       setMessage(null);
@@ -85,11 +167,36 @@ export function AlgorithmLiveDemo({ listing }: { listing: AlgorithmCatalogItem }
     setRunning(true);
     setHasResult(false);
     setMessage(null);
-    window.setTimeout(() => {
-      setRunning(false);
-      setHasResult(true);
-      setMessage(listing.is_mock ? "已生成体验结果；当前为商品效果演示。" : "识别完成");
-    }, 620);
+    if (!realInference) {
+      window.setTimeout(() => {
+        setRunning(false);
+        setHasResult(true);
+        setMessage(listing.is_mock ? "已生成体验结果；当前为商品效果演示。" : "识别完成");
+      }, 620);
+      return;
+    }
+    void (async () => {
+      try {
+        let blob: Blob;
+        if (source === "upload" && uploadedFile) {
+          blob = uploadedFile;
+        } else if (activeImage) {
+          const response = await fetch(activeImage);
+          if (!response.ok) throw new Error("样例图片读取失败");
+          blob = await response.blob();
+        } else {
+          throw new Error("请先选择图片");
+        }
+        const boxes = await realInference.detect(blob, confidence);
+        setRealBoxes(boxes);
+        setRealModelLabel(realInference.modelName);
+        setHasResult(true);
+      } catch (reason) {
+        setMessage(reason instanceof Error ? reason.message : "推理失败，请稍后重试");
+      } finally {
+        setRunning(false);
+      }
+    })();
   }
 
   function resetDemo() {
@@ -97,11 +204,16 @@ export function AlgorithmLiveDemo({ listing }: { listing: AlgorithmCatalogItem }
     setMessage(null);
   }
 
-  function captureUploadedRatio(event: SyntheticEvent<HTMLImageElement>) {
-    if (!uploadedImage) return;
+  // img 加载完成记录真实宽高比：上传图与样例图都走这里，
+  // frame（getContainedFrameStyle）必须贴合图片比例，否则百分比定位的检测框会错位
+  function captureImageRatio(event: SyntheticEvent<HTMLImageElement>) {
     const image = event.currentTarget;
-    if (image.naturalWidth && image.naturalHeight) {
-      setUploadedAspectRatio(image.naturalWidth / image.naturalHeight);
+    if (!image.naturalWidth || !image.naturalHeight) return;
+    const ratio = image.naturalWidth / image.naturalHeight;
+    if (uploadedImage) {
+      setUploadedAspectRatio(ratio);
+    } else {
+      setSampleAspectRatio(ratio);
     }
   }
 
@@ -113,7 +225,7 @@ export function AlgorithmLiveDemo({ listing }: { listing: AlgorithmCatalogItem }
           <h2 id="algorithm-live-demo-title">在线体验</h2>
           <p>选择示例或上传一张图片，直接查看识别结果。</p>
         </div>
-        <span className="algorithm-demo-model"><i aria-hidden="true" />{listing.model_architecture}</span>
+        <span className="algorithm-demo-model"><i aria-hidden="true" />{realBoxes ? (realModelLabel ?? realInference?.modelName) ?? listing.model_architecture : listing.model_architecture}</span>
       </div>
 
       <div className="algorithm-demo-layout">
@@ -124,6 +236,7 @@ export function AlgorithmLiveDemo({ listing }: { listing: AlgorithmCatalogItem }
           </div>
 
           <div
+            ref={canvasRef}
             className={`algorithm-demo-canvas scene-${listing.preview.scene}${source === "upload" ? " is-upload" : ""}${activeImage ? " has-image" : ""}`}
             style={canvasStyle}
             role="img"
@@ -132,11 +245,11 @@ export function AlgorithmLiveDemo({ listing }: { listing: AlgorithmCatalogItem }
             {activeImage ? (
               <>
                 <span className="algorithm-demo-backdrop" aria-hidden="true" />
-                <div className="algorithm-demo-image-frame" style={getContainedFrameStyle(activeSourceRatio, demoFrameRatio, zoom)} aria-hidden="true">
-                  <img src={activeImage} alt="" onLoad={captureUploadedRatio} />
+                <div className="algorithm-demo-image-frame" style={containedFrameStyle} aria-hidden="true">
+                  <img src={activeImage} alt="" onLoad={captureImageRatio} />
                   {hasResult ? visibleBoxes.map((box, index) => (
                     <span className="algorithm-demo-box" key={`${box.label}-${index}`} style={directBoxStyle(box)}>
-                      <small>{box.label} {box.confidence}</small>
+                      <small>{box.label} {box.confidence != null ? Number(box.confidence).toFixed(2) : ""}</small>
                     </span>
                   )) : null}
                 </div>
@@ -144,7 +257,7 @@ export function AlgorithmLiveDemo({ listing }: { listing: AlgorithmCatalogItem }
             ) : (
               <div
                 className={`algorithm-demo-image-frame is-legacy scene-${listing.preview.scene}`}
-                style={getContainedFrameStyle(demoFrameRatio, demoFrameRatio, zoom)}
+                style={containedFrameStyle}
                 aria-hidden="true"
               >
                 {hasResult ? visibleBoxes.map((box, index) => (
@@ -169,15 +282,17 @@ export function AlgorithmLiveDemo({ listing }: { listing: AlgorithmCatalogItem }
               <>
                 <span><Check size={14} />识别完成</span>
                 <strong>{visibleBoxes.length} 个目标</strong>
-                <small>{listing.latency_p95.replace("P95", "")} · 置信度 ≥ {confidence.toFixed(2)}</small>
+                <small>{realBoxes ? `真实推理 · ${realModelLabel ?? "模型"} · ` : listing.latency_p95 ? `${listing.latency_p95.replace("P95", "")} · ` : ""}置信度 ≥ {confidence.toFixed(2)}</small>
               </>
             ) : <small>{message ?? "支持 JPEG、PNG、WebP，最大 10 MB"}</small>}
           </div>
-          {source === "sample" && sceneImage ? (
+          {source === "sample" && (sampleOrigin || sceneImage) ? (
             <p className="algorithm-demo-sample-origin">
-              <span>{sceneImage.assetKind === "dataset-preview" ? "数据集官方预览图" : "真实公开样本"}</span>
-              <a href={sceneImage.sourceUrl} target="_blank" rel="noreferrer">{sceneImage.dataset} · {sceneImage.license}</a>
-              <small>识别框仅为 Mock 演示。</small>
+              <span>{sampleOrigin ? sampleOrigin.label : (sceneImage?.assetKind === "dataset-preview" ? "数据集官方预览图" : "真实公开样本")}</span>
+              {sampleOrigin
+                ? (sampleOrigin.source ? <span>{sampleOrigin.source}</span> : null)
+                : (sceneImage ? <a href={sceneImage.sourceUrl} target="_blank" rel="noreferrer">{sceneImage.dataset} · {sceneImage.license}</a> : null)}
+              {sampleOrigin ? null : <small>识别框仅为 Mock 演示。</small>}
             </p>
           ) : null}
         </div>
@@ -215,11 +330,20 @@ export function AlgorithmLiveDemo({ listing }: { listing: AlgorithmCatalogItem }
           <div className="algorithm-demo-privacy"><ShieldCheck size={15} /><span><strong>体验图片不留存</strong><small>当前页面不会把上传图片保存到素材库。</small></span></div>
 
           {message ? <p className="algorithm-demo-message" role="status">{message}</p> : null}
-          <button className="primary-button algorithm-demo-run" type="button" disabled={running} onClick={runDemo}>
+          <button
+            className="primary-button algorithm-demo-run"
+            type="button"
+            disabled={running || Boolean(runDisabled)}
+            title={runDisabled}
+            onClick={runDemo}
+          >
             {running ? <LoaderCircle size={15} className="spinner" /> : <Play size={15} />}
             {running ? "正在识别" : "运行识别"}
           </button>
-          {listing.is_mock ? <p className="algorithm-demo-disclaimer">当前为商品效果演示；真实调用结果以正式 API 为准。</p> : null}
+          {runDisabled ? <p className="algorithm-demo-disclaimer">{runDisabled}</p> : null}
+          {realBoxes ? (
+            <p className="algorithm-demo-disclaimer">结果来自 edge 推理服务真实调用（当前激活模型）。</p>
+          ) : listing.is_mock ? <p className="algorithm-demo-disclaimer">当前为商品效果演示；真实调用结果以正式 API 为准。</p> : null}
         </aside>
       </div>
     </section>

@@ -1,0 +1,16 @@
+# sense-mu web 运行时镜像
+# 依赖在镜像内安装：rolldown/esbuild 等原生二进制必须匹配 linux-x64-musl，
+# 不能用 mac 上装的 node_modules（见 pack.sh，artifact 只含 dist + package.json）
+FROM node:24-alpine
+WORKDIR /app
+
+COPY package.json ./
+RUN npm install --no-audit --no-fund --loglevel=error --registry=https://registry.npmmirror.com
+
+COPY dist ./dist
+
+ENV PORT=3000 NODE_ENV=production
+EXPOSE 3000
+
+# vinext start：Node 生产服务器，served dist（SSR + 静态资源）
+CMD ["node", "node_modules/vinext/dist/cli.js", "start"]

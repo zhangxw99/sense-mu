@@ -289,9 +289,10 @@ export async function getAutomlAlgorithmDetail(id: AutomlId): Promise<AutomlAlgo
 }
 
 function automlApiBaseUrl(): string {
-  if (typeof window !== "undefined" && !window.location.hostname.startsWith("localhost")) {
-    throw new AutomlDataApiError("AutoML 接口尚未配置服务地址", { status: 0, code: "not_configured" });
-  }
+  // 默认 same-origin：开发期 vite 代理 /sz-api，部署期 nginx 代理 /sz-api（见 deploy/nginx.conf），
+  // 跨域部署时用 NEXT_PUBLIC_AUTOML_API_BASE_URL 覆盖（完整前缀，含 /automl）。
+  const configured = process.env.NEXT_PUBLIC_AUTOML_API_BASE_URL?.trim();
+  if (configured) return configured.replace(/\/+$/, "");
   return "/sz-api/automl";
 }
 

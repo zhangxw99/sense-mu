@@ -3,6 +3,7 @@
 import {
   AlertCircle,
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   LoaderCircle,
@@ -14,10 +15,11 @@ import {
   X,
 } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   type AutomlDevice,
   listAutomlDevices,
+  trainingCapableDevices,
 } from "../../lib/automl-device-api";
 import {
   type AutomlDataset,
@@ -31,6 +33,7 @@ import {
   type AutomlPlatformOption,
   listAutomlPlatformOptions,
 } from "../../lib/automl-platform-api";
+import { type SchemaParamEntry, coerceParamValue, splitSchemaParams } from "../../lib/automl-platform-schema";
 import {
   type AutomlReadiness,
   type AutomlTrainingTask,
@@ -88,6 +91,44 @@ function describePropertyValue(value: unknown): string {
 
 function statusText(statusCd: string): string {
   return trainingTaskStatusLabels[statusCd] ?? statusCd;
+}
+
+type TaskTreeRow = { task: AutomlTrainingTask; depth: number; hasChildren: boolean };
+
+// 按「继续训练」血缘（sourceTrainingTaskId）建树：原始任务是根，重训任务挂在来源下，可嵌套。
+// 根按创建时间倒序（新任务在前），子任务按创建时间正序（体现迭代顺序）。
+// 血缘指向不存在/已删除任务时按根处理。超过 TREE_FETCH_LIMIT 的部分不参与建树（列表退化为平铺）。
+const TREE_FETCH_LIMIT = 500;
+
+function buildTaskTreeRows(tasks: AutomlTrainingTask[], collapsed: Set<string>): TaskTreeRow[] {
+  const byId = new Map(tasks.map((task) => [String(task.id), task]));
+  const children = new Map<string, AutomlTrainingTask[]>();
+  const roots: AutomlTrainingTask[] = [];
+  for (const task of tasks) {
+    const parentId = task.sourceTrainingTaskId != null ? String(task.sourceTrainingTaskId) : "";
+    if (parentId && byId.has(parentId)) {
+      const siblings = children.get(parentId) ?? [];
+      siblings.push(task);
+      children.set(parentId, siblings);
+    } else {
+      roots.push(task);
+    }
+  }
+  const byCreatedDesc = (a: AutomlTrainingTask, b: AutomlTrainingTask) =>
+    String(b.createTime).localeCompare(String(a.createTime));
+  const byCreatedAsc = (a: AutomlTrainingTask, b: AutomlTrainingTask) =>
+    String(a.createTime).localeCompare(String(b.createTime));
+  roots.sort(byCreatedDesc);
+  for (const siblings of children.values()) siblings.sort(byCreatedAsc);
+  const rows: TaskTreeRow[] = [];
+  const walk = (task: AutomlTrainingTask, depth: number) => {
+    const kids = children.get(String(task.id)) ?? [];
+    rows.push({ task, depth, hasChildren: kids.length > 0 });
+    if (collapsed.has(String(task.id))) return;
+    for (const child of kids) walk(child, depth + 1);
+  };
+  for (const root of roots) walk(root, 0);
+  return rows;
 }
 
 export function TrainingTasksWorkbench() {
@@ -164,6 +205,40 @@ export function TrainingTasksWorkbench() {
     void loadTasks(1, "", "");
   }, [loadTasks]);
 
+  // 树形视图（无搜索/筛选时）：全量拉取按血缘建树；搜索或筛选时退化为平铺分页
+  const treeActive = !keyword.trim() && !statusFilter;
+  const [collapsedTree, setCollapsedTree] = useState<Set<string>>(new Set());
+  const [treeTasks, setTreeTasks] = useState<AutomlTrainingTask[] | null>(null);
+  useEffect(() => {
+    if (!treeActive) {
+      setTreeTasks(null);
+      return;
+    }
+    let cancelled = false;
+    listAutomlTrainingTasks({ page: 1, limit: TREE_FETCH_LIMIT })
+      .then((result) => {
+        if (!cancelled) setTreeTasks(result.rows);
+      })
+      .catch(() => {
+        if (!cancelled) setTreeTasks(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [treeActive, tasks]);
+  const treeRows = useMemo(
+    () => (treeActive && treeTasks ? buildTaskTreeRows(treeTasks, collapsedTree) : null),
+    [treeActive, treeTasks, collapsedTree],
+  );
+  function toggleTreeBranch(taskId: string) {
+    setCollapsedTree((current) => {
+      const next = new Set(current);
+      if (next.has(taskId)) next.delete(taskId);
+      else next.add(taskId);
+      return next;
+    });
+  }
+
   // 侧栏等外部入口删除任务后联动刷新当前列表视图
   useEffect(() => {
     const reload = () => { void loadTasks(page, keyword, statusFilter, { silent: true }); };
@@ -217,6 +292,18 @@ export function TrainingTasksWorkbench() {
       }
     })();
   }
+
+  // 侧栏「训练 +」无项目时直连训练任务创建（?create=1），进页自动开向导
+  const createParamConsumed = useRef(false);
+  useEffect(() => {
+    if (createParamConsumed.current) return;
+    createParamConsumed.current = true;
+    if (new URLSearchParams(window.location.search).get("create") === "1") {
+      openWizard();
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function selectDataset(nextDatasetId: string) {
     setDatasetId(nextDatasetId);
@@ -318,18 +405,14 @@ export function TrainingTasksWorkbench() {
     setSubmitting(true);
     setWizardError(null);
     try {
-      // 按 Schema 声明的类型提交：integer/number 转数字，其余保留字符串
+      // 按 Schema 声明的类型提交：数值转数字、布尔转布尔，空值省略由服务端合并默认
       const properties = selectedOption?.configSchemaJson?.properties ?? {};
       const hyperParamsJson: Record<string, unknown> = {};
       for (const [name, text] of Object.entries(hyperParams)) {
         if (!String(text).trim()) continue;
-        const propertyType = (properties[name] as AutomlPlatformConfigProperty | undefined)?.type;
-        if (propertyType === "integer" || propertyType === "number") {
-          const parsed = Number(text);
-          hyperParamsJson[name] = Number.isFinite(parsed) ? parsed : text;
-        } else {
-          hyperParamsJson[name] = text;
-        }
+        const property = (properties[name] ?? {}) as AutomlPlatformConfigProperty;
+        const value = coerceParamValue(property, String(text));
+        if (value !== undefined) hyperParamsJson[name] = value;
       }
       const created = await createAutomlTrainingTask({
         name: taskName.trim() || undefined,
@@ -355,7 +438,8 @@ export function TrainingTasksWorkbench() {
     void (async () => {
       try {
         const devicesPage = await listAutomlDevices({ page: 1, limit: 50, statusCd: "ONLINE" });
-        setOnlineDevices(devicesPage.rows);
+        // 训练下发只列支持训练的设备（端侧明确不支持的排除，能力未知保留）
+        setOnlineDevices(trainingCapableDevices(devicesPage.rows));
       } catch (reason) {
         setActionError(reason instanceof Error ? reason.message : "设备列表加载失败");
       } finally {
@@ -499,13 +583,33 @@ export function TrainingTasksWorkbench() {
               <span>开始时间</span>
               <span className="task-actions-head">操作</span>
             </div>
-            {tasks.map((task) => (
-              <div className="task-row" key={String(task.id)}>
+            {(treeRows ?? tasks.map((task) => ({ task, depth: 0, hasChildren: false }))).map(({ task, depth, hasChildren }) => {
+              const taskId = String(task.id);
+              const collapsed = collapsedTree.has(taskId);
+              return (
+              <div className="task-row" key={taskId}>
                 <div className="task-name">
-                  <Link href={`/training-tasks/${encodeURIComponent(String(task.id))}`} title={task.name || task.taskCode}>
-                    {task.name || task.taskCode}
-                  </Link>
-                  <small>{task.taskCode}</small>
+                  <div className="task-tree-line" style={{ paddingLeft: depth * 16 }}>
+                    {hasChildren ? (
+                      <button
+                        type="button"
+                        className="task-tree-toggle"
+                        aria-label={collapsed ? `展开「${task.name || task.taskCode}」的重训任务` : `收起「${task.name || task.taskCode}」的重训任务`}
+                        aria-expanded={!collapsed}
+                        onClick={() => toggleTreeBranch(taskId)}
+                      >
+                        {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+                      </button>
+                    ) : (
+                      <span className="task-tree-toggle is-leaf" aria-hidden="true" />
+                    )}
+                    <Link href={`/training-tasks/${encodeURIComponent(taskId)}`} title={task.name || task.taskCode}>
+                      {task.publishedVersion ? <span className="task-version-tag">{task.publishedVersion}</span> : null}
+                      {task.name || task.taskCode}
+                    </Link>
+                    {depth > 0 ? <span className="task-retrain-badge">重训</span> : null}
+                  </div>
+                  <small style={{ paddingLeft: depth * 16 + 24 }}>{task.taskCode}</small>
                 </div>
                 <span>
                   <span className="device-status-chip task-status-chip" data-status={task.statusCd}>
@@ -551,10 +655,11 @@ export function TrainingTasksWorkbench() {
                   ) : null}
                 </div>
               </div>
-            ))}
+              );
+            })}
           </article>
 
-          {totalPage > 1 ? (
+          {(!treeActive && totalPage > 1) ? (
             <div className="devices-pagination">
               <button
                 className="secondary-button compact"
@@ -766,52 +871,75 @@ export function TrainingTasksWorkbench() {
                     onChange={(event) => setTaskName(event.target.value)}
                   />
                 </label>
-                {Object.keys(selectedOption?.configSchemaJson?.properties ?? {}).length ? (
-                  <div className="task-params-grid">
-                    {Object.entries(selectedOption?.configSchemaJson?.properties ?? {}).map(([name, rawProperty]) => {
-                      const property = (rawProperty ?? {}) as AutomlPlatformConfigProperty;
-                      const value = hyperParams[name] ?? "";
-                      const setValue = (next: string) => setHyperParams((current) => ({ ...current, [name]: next }));
-                      const isNumeric = property.type === "integer" || property.type === "number";
-                      return (
-                        <label className="automl-field" key={name}>
-                          <span>{name}{isNumeric && property.minimum != null ? `（最小 ${String(property.minimum)}）` : ""}</span>
-                          {Array.isArray(property.enum) && property.enum.length ? (
-                            <select
-                              className="device-dialog-select"
-                              value={value}
-                              onChange={(event) => setValue(event.target.value)}
-                            >
-                              <option value="">未设置</option>
-                              {property.enum.map((candidate) => (
-                                <option value={String(candidate)} key={String(candidate)}>{String(candidate)}</option>
-                              ))}
-                            </select>
-                          ) : isNumeric ? (
-                            <input
-                              className="device-dialog-select constants-dialog-input"
-                              type="number"
-                              min={property.minimum != null ? String(property.minimum) : undefined}
-                              max={property.maximum != null ? String(property.maximum) : undefined}
-                              step={property.type === "integer" ? "1" : "any"}
-                              value={value}
-                              onChange={(event) => setValue(event.target.value)}
-                            />
-                          ) : (
-                            <input
-                              className="device-dialog-select constants-dialog-input"
-                              value={value}
-                              placeholder={property.default !== undefined ? `默认 ${describePropertyValue(property.default)}` : "选填"}
-                              onChange={(event) => setValue(event.target.value)}
-                            />
-                          )}
-                        </label>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <p className="device-detail-hint">该平台未声明训练参数 Schema，将直接使用基础模型默认配置。</p>
-                )}
+                {(() => {
+                  const paramGroups = splitSchemaParams(selectedOption?.configSchemaJson);
+                  const renderWizardParam = ({ key, property }: SchemaParamEntry) => {
+                    const value = hyperParams[key] ?? "";
+                    const setValue = (next: string) => setHyperParams((current) => ({ ...current, [key]: next }));
+                    const isNumeric = property.type === "integer" || property.type === "number";
+                    return (
+                      <label className="automl-field" key={key}>
+                        <span>{typeof property.title === "string" && property.title ? property.title : key}{isNumeric && property.minimum != null ? `（最小 ${String(property.minimum)}）` : ""}</span>
+                        {Array.isArray(property.enum) && property.enum.length ? (
+                          <select
+                            className="device-dialog-select"
+                            value={value}
+                            onChange={(event) => setValue(event.target.value)}
+                          >
+                            <option value="">未设置</option>
+                            {property.enum.map((candidate) => (
+                              <option value={String(candidate)} key={String(candidate)}>{String(candidate)}</option>
+                            ))}
+                          </select>
+                        ) : property.type === "boolean" ? (
+                          <select
+                            className="device-dialog-select"
+                            value={value}
+                            onChange={(event) => setValue(event.target.value)}
+                          >
+                            <option value="">未设置</option>
+                            <option value="true">是</option>
+                            <option value="false">否</option>
+                          </select>
+                        ) : isNumeric ? (
+                          <input
+                            className="device-dialog-select constants-dialog-input"
+                            type="number"
+                            min={property.minimum != null ? String(property.minimum) : undefined}
+                            max={property.maximum != null ? String(property.maximum) : undefined}
+                            step={property.type === "integer" ? "1" : "any"}
+                            value={value}
+                            onChange={(event) => setValue(event.target.value)}
+                          />
+                        ) : (
+                          <input
+                            className="device-dialog-select constants-dialog-input"
+                            value={value}
+                            placeholder={property.default !== undefined ? `默认 ${describePropertyValue(property.default)}` : "选填"}
+                            onChange={(event) => setValue(event.target.value)}
+                          />
+                        )}
+                      </label>
+                    );
+                  };
+                  return paramGroups.common.length || paramGroups.advanced.length ? (
+                    <>
+                      <div className="task-params-grid">
+                        {paramGroups.common.map(renderWizardParam)}
+                      </div>
+                      {paramGroups.advanced.length ? (
+                        <details className="platform-param-advanced">
+                          <summary>高级参数（{paramGroups.advanced.length}）</summary>
+                          <div className="task-params-grid">
+                            {paramGroups.advanced.map(renderWizardParam)}
+                          </div>
+                        </details>
+                      ) : null}
+                    </>
+                  ) : (
+                    <p className="device-detail-hint">该平台未声明训练参数 Schema，将直接使用基础模型默认配置。</p>
+                  );
+                })()}
                 {wizardError ? <p className="device-detail-hint is-error" role="alert">{wizardError}</p> : null}
                 <div className="dialog-actions">
                   <button className="secondary-button" type="button" disabled={submitting} onClick={() => setStep(2)}>上一步</button>
@@ -847,7 +975,7 @@ export function TrainingTasksWorkbench() {
             {devicesLoading ? (
               <p className="device-detail-hint"><LoaderCircle size={12} className="spinner" /> 正在读取在线设备…</p>
             ) : onlineDevices.length === 0 ? (
-              <p className="device-detail-hint is-error">暂无在线设备：请先启动端侧服务并等待心跳上线。</p>
+              <p className="device-detail-hint is-error">没有支持训练的在线设备：端侧需启用训练能力并安装训练依赖（设备列表中带「支持训练」标识）。</p>
             ) : (
               <div className="task-device-list" role="radiogroup" aria-label="选择在线设备">
                 {onlineDevices.map((device) => (

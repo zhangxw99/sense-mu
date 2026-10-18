@@ -18,7 +18,22 @@ export type AutomlDeviceCapability = {
   supportedFormats?: string[];
   runtime?: string;
   supportsDetect?: boolean;
+  supportedTrainingTypes?: string[];
 } & Record<string, unknown>;
+
+/**
+ * 设备训练能力：true=支持训练 / false=端侧明确不支持（supportedTrainingTypes 为空，
+ * 训练未启用或缺少依赖）/ null=旧版端侧未上报（能力未知，后端按放行兜底）。
+ */
+export function deviceTrainingCapability(device: AutomlDevice): boolean | null {
+  const types = device.capabilityJson?.supportedTrainingTypes;
+  return Array.isArray(types) ? types.length > 0 : null;
+}
+
+/** 下发训练的设备候选：排除端侧明确不支持训练的设备（能力未知保留，由后端最终校验）。 */
+export function trainingCapableDevices(devices: AutomlDevice[]): AutomlDevice[] {
+  return devices.filter((device) => deviceTrainingCapability(device) !== false);
+}
 
 export type AutomlDeviceGpuResource = {
   name?: string | null;
@@ -45,6 +60,11 @@ export type AutomlDeviceServiceInfo = {
   pid?: number | null;
   port?: number | null;
   uptimeSec?: number | null;
+  // 多实例区分：resident=常驻实例；session-*=临时推理会话实例
+  instanceId?: string | null;
+  ephemeral?: boolean;
+  // inference-service 专属：心跳附带实际加载的模型与运行时（运行服务表第二行展示）
+  model?: { modelId?: string | null; modelVersion?: string | null; runtime?: string | null } | null;
 } & Record<string, unknown>;
 
 export type AutomlDeviceRuntimeState = {
@@ -55,6 +75,10 @@ export type AutomlDeviceRuntimeState = {
     activeModelId?: string | null;
     activeModelVersion?: string | null;
     executionProvider?: string | null;
+    serviceVersion?: string | null;
+    runtime?: string | null;
+    apiAlias?: string | null;
+    aliasAvailable?: boolean | null;
   } | null;
   resources?: AutomlDeviceResourceSnapshot | null;
   services?: AutomlDeviceServiceInfo[] | null;
@@ -147,6 +171,26 @@ export function isDeploymentInProgress(status: AutomlDeploymentStatus): boolean 
   return DEPLOYMENT_ACTIVE_STATUSES.includes(status);
 }
 
+/**
+ * 部署记录的「运行中」判定：ACTIVE 历史不会被置换，运行中 = 后端 statusCd=ACTIVE
+ * 列表（每设备最新一次激活）∩ 本记录。任务详情页等原始部署历史不能只看 statusCd，
+ * 否则设备切换模型后旧记录仍会被误标为运行中。
+ */
+export function resolveRunningDeployment(
+  deployments: AutomlDeviceDeployment[],
+  runningRows: AutomlDeviceDeployment[] | null,
+): AutomlDeviceDeployment | null {
+  if (!runningRows) return null;
+  const runningById = new Map(runningRows.map((row) => [String(row.deploymentId), row]));
+  for (const deployment of deployments) {
+    if (deployment.statusCd !== "ACTIVE") continue;
+    // 命中时返回运行中列表的富化行（带 deviceName/apiAlias），任务历史行没有这些字段
+    const running = runningById.get(String(deployment.deploymentId));
+    if (running) return running;
+  }
+  return null;
+}
+
 export async function listAutomlDevices(
   params: {
     page?: number;
@@ -193,13 +237,14 @@ export async function deleteAutomlDevice(deviceId: AutomlId): Promise<void> {
 export async function createAutomlDeviceDeployment(
   deviceId: AutomlId,
   modelVersionId: AutomlId,
+  apiAlias?: string | null,
 ): Promise<AutomlDeviceDeployment> {
   return fetchAutoml<AutomlDeviceDeployment>(
     `/devices/${encodeURIComponent(String(deviceId))}/deployments`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ modelVersionId }),
+      body: JSON.stringify({ modelVersionId, ...(apiAlias?.trim() ? { apiAlias: apiAlias.trim() } : {}) }),
     },
   );
 }

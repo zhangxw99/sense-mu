@@ -101,3 +101,45 @@ test("isDeploymentInProgress 终态为 false、过程态为 true", () => {
     assert.equal(api.isDeploymentInProgress(status), false, status);
   }
 });
+
+test("resolveRunningDeployment 只认运行中口径（与每设备最新激活列表取交集）", () => {
+  // 场景复刻：任务 12 的焊缝模型部署 #15 仍是 ACTIVE，但设备 2 已切换到 #16（wildlife）
+  const superseded = {
+    deploymentId: "15",
+    deviceId: "2",
+    statusCd: "ACTIVE",
+    issuedAt: "2026-10-08T23:07:33",
+    activatedAt: "2026-10-08 23:40:58",
+  };
+  const replacedBy = { deploymentId: "16", deviceId: "2", statusCd: "ACTIVE" };
+
+  // 运行中列表（后端已按每设备最新一次激活去重）里没有 #15 → 不算已部署
+  assert.equal(api.resolveRunningDeployment([superseded], [replacedBy]), null);
+  assert.equal(api.resolveRunningDeployment([superseded], []), null);
+  assert.equal(api.resolveRunningDeployment([superseded], null), null);
+
+  // 运行中列表里仍是它 → 已部署（取任务记录行，保留 deviceName/apiAlias 等富化字段）
+  const running = { ...superseded, deviceName: "vivideMacBook-Pro-2.local", apiAlias: "hhanfen-12" };
+  assert.equal(api.resolveRunningDeployment([superseded], [running]), running);
+
+  // 非 ACTIVE 记录永不命中
+  const failed = { deploymentId: "11", statusCd: "FAILED" };
+  assert.equal(api.resolveRunningDeployment([failed], [failed]), null);
+});
+
+test("deviceTrainingCapability 三态：支持/明确不支持/未上报", () => {
+  assert.equal(api.deviceTrainingCapability({ capabilityJson: { supportedTrainingTypes: ["OBJECT_DETECTION"] } }), true);
+  assert.equal(api.deviceTrainingCapability({ capabilityJson: { supportedTrainingTypes: [] } }), false);
+  // 旧版端侧：无 capabilityJson 或缺 supportedTrainingTypes 键 → 未知
+  assert.equal(api.deviceTrainingCapability({ capabilityJson: {} }), null);
+  assert.equal(api.deviceTrainingCapability({ capabilityJson: null }), null);
+  assert.equal(api.deviceTrainingCapability({}), null);
+});
+
+test("trainingCapableDevices 排除明确不支持训练的设备，能力未知保留", () => {
+  const capable = { deviceId: "1", capabilityJson: { supportedTrainingTypes: ["OBJECT_DETECTION"] } };
+  const incapable = { deviceId: "2", capabilityJson: { supportedTrainingTypes: [] } };
+  const unknown = { deviceId: "3", capabilityJson: null };
+  const filtered = api.trainingCapableDevices([capable, incapable, unknown]);
+  assert.deepEqual(filtered.map((device) => device.deviceId), ["1", "3"]);
+});

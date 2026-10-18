@@ -95,3 +95,30 @@ test("isTrainingTaskActive 进行中为 true、终态为 false", () => {
     assert.equal(api.isTrainingTaskActive(status), false, status);
   }
 });
+
+test("算法市场发布三件套：查询 publication、上架 market/publish、下架 market/unpublish", async () => {
+  const calls = installFetchStub(() => ({
+    published: true,
+    modelId: "80",
+    modelCode: "MDL-T0001",
+    modelName: "路损检测",
+    modelVersionId: "700",
+    version: "v1",
+    marketStatusCd: "LISTED",
+  }));
+
+  const publication = await api.getAutomlTrainingPublication("40");
+  assert.match(calls[0].url, /\/training-tasks\/40\/publication$/);
+  assert.equal(publication.published, true);
+  assert.equal(publication.marketStatusCd, "LISTED");
+
+  const listed = await api.publishAutomlTrainingToMarket("40");
+  assert.equal(calls[1].init.method, "POST");
+  assert.match(calls[1].url, /\/training-tasks\/40\/market\/publish$/);
+  assert.equal(listed.marketStatusCd, "LISTED");
+
+  const unlisted = await api.unpublishAutomlTrainingFromMarket("40");
+  assert.equal(calls[2].init.method, "POST");
+  assert.match(calls[2].url, /\/training-tasks\/40\/market\/unpublish$/);
+  assert.equal(unlisted.published, true);
+});

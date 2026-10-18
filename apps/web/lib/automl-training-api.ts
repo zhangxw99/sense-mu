@@ -39,6 +39,11 @@ export type AutomlTrainingTask = {
   taskType: string | null;
   datasetVersionId: AutomlId | null;
   datasetId: AutomlId | null;
+  // 重训血缘（「继续训练」产生的新任务回指来源，§9.1）
+  sourceTrainingTaskId: AutomlId | null;
+  sourceTaskName: string | null;
+  // 该任务已发布的最新模型版本号（如 v2；未发布为 null）
+  publishedVersion: string | null;
   deviceId: AutomlId | null;
   deviceName: string | null;
   hyperParamsJson: Record<string, unknown> | null;
@@ -112,6 +117,8 @@ export const trainingTaskStatusLabels: Record<string, string> = {
   SCHEDULED: "已调度",
   RUNNING: "训练中",
   SUCCEEDED: "已完成",
+  // 历史数据的非标准终态，按已完成口径展示
+  COMPLETED: "已完成",
   FAILED: "失败",
   CANCELLED: "已取消",
   CANCELED: "已取消",
@@ -130,6 +137,8 @@ export async function createAutomlTrainingTask(input: {
   baseModelId: AutomlId;
   hyperParamsJson?: Record<string, unknown> | null;
   trainingConfigJson?: Record<string, unknown> | null;
+  // 「继续训练」血缘：来源任务ID，建立训练版本链（§9.1）
+  sourceTrainingTaskId?: AutomlId | null;
 }): Promise<AutomlTrainingTask> {
   return fetchAutoml<AutomlTrainingTask>("/training-tasks", jsonInit("POST", input));
 }
@@ -246,13 +255,87 @@ export type AutomlTrainingPublishResult = {
   checksum: string | null;
   packageSize: AutomlId | null;
   reused: boolean;
+  marketStatusCd: "LISTED" | "UNLISTED" | null;
 };
 
-/** 发布训练成果为模型资产（同步幂等；部署前自动调用，重复调用返回已有版本）。 */
-export async function publishAutomlTrainingTask(taskId: AutomlId): Promise<AutomlTrainingPublishResult> {
+/** 发布训练成果为模型资产（同步幂等；部署前自动调用，重复调用返回已有版本）。
+ *  只注册资产，不改变算法市场上架状态；上架走 publishAutomlTrainingToMarket。
+ *  modelId 可选（§9.10 家族版本化发布）：重训成果挂到家族模型下发新版本 v{n+1}。 */
+export async function publishAutomlTrainingTask(
+  taskId: AutomlId,
+  modelId?: AutomlId | null,
+): Promise<AutomlTrainingPublishResult> {
   return fetchAutoml<AutomlTrainingPublishResult>(
     `/training-tasks/${encodeURIComponent(String(taskId))}/publish`,
+    jsonInit("POST", { modelId: modelId ?? null }),
+  );
+}
+
+export type AutomlTrainingPublication = {
+  published: boolean;
+  modelId: AutomlId | null;
+  modelCode: string | null;
+  modelName: string | null;
+  modelVersionId: AutomlId | null;
+  version: string | null;
+  marketStatusCd: "LISTED" | "UNLISTED" | null;
+};
+
+/** 任务的发布/上架状态：详情页「发布到算法市场 / 从算法市场下架」按钮依据。 */
+export async function getAutomlTrainingPublication(taskId: AutomlId): Promise<AutomlTrainingPublication> {
+  return fetchAutoml<AutomlTrainingPublication>(
+    `/training-tasks/${encodeURIComponent(String(taskId))}/publication`,
+  );
+}
+
+/** 发布到算法市场（上架）：幂等复用发布后把模型 market_status_cd 置 LISTED。
+ *  modelId 语义同 publishAutomlTrainingTask（家族版本化发布）。 */
+export async function publishAutomlTrainingToMarket(
+  taskId: AutomlId,
+  modelId?: AutomlId | null,
+): Promise<AutomlTrainingPublishResult> {
+  return fetchAutoml<AutomlTrainingPublishResult>(
+    `/training-tasks/${encodeURIComponent(String(taskId))}/market/publish`,
+    jsonInit("POST", { modelId: modelId ?? null }),
+  );
+}
+
+/** 从算法市场下架（market_status_cd 置 UNLISTED）；已部署设备不受影响。 */
+export async function unpublishAutomlTrainingFromMarket(taskId: AutomlId): Promise<AutomlTrainingPublication> {
+  return fetchAutoml<AutomlTrainingPublication>(
+    `/training-tasks/${encodeURIComponent(String(taskId))}/market/unpublish`,
     { method: "POST" },
+  );
+}
+
+// ---- 训练版本家族（§9.13）：模型 = 多个训练版本 ----
+
+export type AutomlTrainingVersionItem = {
+  modelVersionId: AutomlId;
+  version: string;
+  trainingTaskId: AutomlId;
+  taskName: string | null;
+  taskStatusCd: string | null;
+  datasetVersionId: AutomlId | null;
+  datasetVersionNumber: string | null;
+  metricsJson: Record<string, number> | null;
+  packageReady: boolean;
+  registeredAt: string | null;
+  activeDeviceNames: string[] | null;
+};
+
+export type AutomlTrainingVersionFamily = {
+  modelId: AutomlId | null;
+  modelCode: string | null;
+  modelName: string | null;
+  marketStatusCd: "LISTED" | "UNLISTED" | null;
+  versions: AutomlTrainingVersionItem[];
+};
+
+/** 任务所属模型版本家族：自身发布版本 → 沿 sourceTrainingTaskId 回溯最近已发布祖先。 */
+export async function listAutomlTrainingTaskVersions(taskId: AutomlId): Promise<AutomlTrainingVersionFamily> {
+  return fetchAutoml<AutomlTrainingVersionFamily>(
+    `/training-tasks/${encodeURIComponent(String(taskId))}/versions`,
   );
 }
 

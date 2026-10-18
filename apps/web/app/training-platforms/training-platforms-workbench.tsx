@@ -16,8 +16,6 @@ import {
   type AutomlBaseModelInput,
   type AutomlConstant,
   type AutomlPlatform,
-  type AutomlPlatformConfigProperty,
-  type AutomlPlatformConfigSchema,
   createAutomlPlatform,
   createAutomlPlatformBaseModel,
   deleteAutomlBaseModel,
@@ -30,6 +28,16 @@ import {
   updateAutomlBaseModel,
   updateAutomlPlatform,
 } from "../../lib/automl-platform-api";
+import {
+  type PlatformParamRow,
+  PARAM_TYPES,
+  PARAM_TYPE_LABELS,
+  defaultParamRows,
+  emptyParamRow,
+  paramRowError,
+  paramRowsToSchema,
+  schemaToParamRows,
+} from "../../lib/automl-platform-schema";
 
 type PlatformForm = {
   platformCode: string;
@@ -37,7 +45,6 @@ type PlatformForm = {
   framework: string;
   operatorKey: string;
   taskTypes: string[];
-  schemaText: string;
   sortOrder: string;
   statusCd: string;
   description: string;
@@ -74,7 +81,6 @@ const emptyPlatformForm: PlatformForm = {
   framework: "",
   operatorKey: "",
   taskTypes: [],
-  schemaText: "",
   sortOrder: "0",
   statusCd: "ENABLED",
   description: "",
@@ -135,8 +141,7 @@ export function TrainingPlatformsWorkbench() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [form, setForm] = useState<PlatformForm>(emptyPlatformForm);
-  const [schemaError, setSchemaError] = useState<string | null>(null);
-  const [parsedSchema, setParsedSchema] = useState<AutomlPlatformConfigSchema | null>(null);
+  const [paramRows, setParamRows] = useState<PlatformParamRow[]>([]);
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -202,13 +207,11 @@ export function TrainingPlatformsWorkbench() {
       framework: platform.framework ?? "",
       operatorKey: platform.operatorKey ?? "",
       taskTypes: platform.taskTypes ?? [],
-      schemaText: platform.configSchemaJson ? JSON.stringify(platform.configSchemaJson, null, 2) : "",
       sortOrder: String(platform.sortOrder ?? 0),
       statusCd: platform.statusCd || "ENABLED",
       description: platform.description ?? "",
     });
-    setParsedSchema(platform.configSchemaJson);
-    setSchemaError(null);
+    setParamRows(schemaToParamRows(platform.configSchemaJson));
     setFormError(null);
   }, []);
 
@@ -217,7 +220,7 @@ export function TrainingPlatformsWorkbench() {
     if (mode === "create") return;
     if (!selectedId) {
       setForm(emptyPlatformForm);
-      setParsedSchema(null);
+      setParamRows([]);
       setBaseModels([]);
       return;
     }
@@ -261,17 +264,18 @@ export function TrainingPlatformsWorkbench() {
     setMode("create");
     setSelectedId(null);
     setForm(emptyPlatformForm);
-    setParsedSchema(null);
-    setSchemaError(null);
+    setParamRows(defaultParamRows());
     setFormError(null);
     setBaseModels([]);
   }
 
-  // Schema 文本失焦时校验并同步右侧参数卡片
-  function validateSchemaText() {
-    const { value, error: parseError } = parseOptionalJson(form.schemaText);
-    setSchemaError(parseError);
-    setParsedSchema(parseError ? null : value);
+  // 参数卡片行的增删改；保存时统一还原成 JSON Schema
+  function updateParamRow(index: number, patch: Partial<PlatformParamRow>) {
+    setParamRows((current) => current.map((row, position) => (position === index ? { ...row, ...patch } : row)));
+  }
+
+  function removeParamRow(index: number) {
+    setParamRows((current) => current.filter((_, position) => position !== index));
   }
 
   async function submitPlatform() {
@@ -283,10 +287,9 @@ export function TrainingPlatformsWorkbench() {
       setFormError("请填写平台编码");
       return;
     }
-    const schema = parseOptionalJson(form.schemaText);
-    if (schema.error) {
-      setSchemaError(schema.error);
-      setFormError("训练参数 Schema JSON 不合法，请修正后再保存");
+    const rowProblem = paramRowError(paramRows);
+    if (rowProblem) {
+      setFormError(rowProblem);
       return;
     }
     setSaving(true);
@@ -298,7 +301,7 @@ export function TrainingPlatformsWorkbench() {
         framework: form.framework || undefined,
         operatorKey: form.operatorKey.trim() || undefined,
         taskTypes: form.taskTypes,
-        configSchemaJson: schema.value,
+        configSchemaJson: paramRowsToSchema(paramRows) ?? undefined,
         sortOrder: Number.isFinite(sortOrder) ? sortOrder : 0,
         statusCd: form.statusCd,
         description: form.description.trim() || undefined,
@@ -438,9 +441,133 @@ export function TrainingPlatformsWorkbench() {
   }
 
   const schemaProperties = useMemo(
-    () => Object.entries(parsedSchema?.properties ?? {}) as [string, AutomlPlatformConfigProperty][],
-    [parsedSchema],
+    () => paramRows.map((row, index) => ({ row, index })),
+    [paramRows],
   );
+  const commonParamCards = schemaProperties.filter(({ row }) => !row.advanced);
+  const advancedParamCards = schemaProperties.filter(({ row }) => row.advanced);
+
+  // 单张参数卡片：参数名/类型/显示名/默认值/范围/可选值/常用分组，全部就地编辑
+  function renderParamCard(entry: { row: PlatformParamRow; index: number }) {
+    const { row, index } = entry;
+    const numeric = row.type === "integer" || row.type === "number";
+    return (
+      <div className="platform-param-card" key={index}>
+        <div className="platform-param-card-head">
+          <input
+            className="platform-param-key"
+            value={row.key}
+            placeholder="参数名，如 epochs"
+            aria-label="参数名"
+            spellCheck={false}
+            onChange={(event) => updateParamRow(index, { key: event.target.value })}
+          />
+          <select
+            value={row.type}
+            aria-label="参数类型"
+            onChange={(event) => updateParamRow(index, { type: event.target.value as PlatformParamRow["type"] })}
+          >
+            {PARAM_TYPES.map((type) => <option value={type} key={type}>{PARAM_TYPE_LABELS[type]}</option>)}
+          </select>
+          <label className="platform-param-advanced-toggle">
+            <input
+              type="checkbox"
+              checked={row.advanced}
+              onChange={(event) => updateParamRow(index, { advanced: event.target.checked })}
+            />
+            <span>高级</span>
+          </label>
+          <button
+            className="secondary-button compact device-delete-button"
+            type="button"
+            aria-label={`删除参数 ${row.key || "未命名"}`}
+            onClick={() => removeParamRow(index)}
+          >
+            <Trash2 size={12} />
+          </button>
+        </div>
+        <div className="platform-param-card-fields">
+          <label className="automl-field">
+            <span>显示名</span>
+            <input
+              value={row.title}
+              placeholder="如 训练轮数"
+              onChange={(event) => updateParamRow(index, { title: event.target.value })}
+            />
+          </label>
+          {row.type === "boolean" ? (
+            <label className="automl-field">
+              <span>默认值</span>
+              <select
+                value={row.defaultValue}
+                onChange={(event) => updateParamRow(index, { defaultValue: event.target.value })}
+              >
+                <option value="">未设置</option>
+                <option value="true">是</option>
+                <option value="false">否</option>
+              </select>
+            </label>
+          ) : (
+            <label className="automl-field">
+              <span>默认值</span>
+              <input
+                type={numeric ? "number" : "text"}
+                step={row.type === "integer" ? "1" : numeric ? "any" : undefined}
+                value={row.defaultValue}
+                placeholder="选填"
+                onChange={(event) => updateParamRow(index, { defaultValue: event.target.value })}
+              />
+            </label>
+          )}
+          {numeric ? (
+            <>
+              <label className="automl-field">
+                <span>最小值</span>
+                <input
+                  type="number"
+                  step="any"
+                  value={row.min}
+                  placeholder="选填"
+                  onChange={(event) => updateParamRow(index, { min: event.target.value })}
+                />
+              </label>
+              <label className="automl-field">
+                <span>最大值</span>
+                <input
+                  type="number"
+                  step="any"
+                  value={row.max}
+                  placeholder="选填"
+                  onChange={(event) => updateParamRow(index, { max: event.target.value })}
+                />
+              </label>
+            </>
+          ) : null}
+          {row.type !== "boolean" ? (
+            <label className="automl-field automl-field-wide">
+              <span>可选值</span>
+              <input
+                value={row.enumText}
+                placeholder={numeric ? "逗号分隔，如 320,416,640" : "逗号分隔，如 auto,SGD"}
+                onChange={(event) => updateParamRow(index, { enumText: event.target.value })}
+              />
+            </label>
+          ) : null}
+          <label className="automl-field">
+            <span>优先级</span>
+            <input
+              type="number"
+              step="1"
+              value={row.priority}
+              placeholder="默认序"
+              title="数值越小越靠前；留空按常见参数默认序（epochs/batch/imgsz/optimizer/lr0 优先）"
+              onChange={(event) => updateParamRow(index, { priority: event.target.value })}
+            />
+          </label>
+        </div>
+      </div>
+    );
+  }
 
   const editing = mode === "view" && !!selectedId;
   const showCreatePanel = mode === "create" || (!listLoading && platforms.length === 0);
@@ -646,37 +773,33 @@ export function TrainingPlatformsWorkbench() {
           {editing ? (
             <>
               <article className="panel platform-section">
-                <h3 className="device-section-title">训练参数 Schema <small>JSON Schema，properties 中的参数会展示给训练表单</small></h3>
-                <textarea
-                  className={`platform-schema-editor${schemaError ? " is-invalid" : ""}`}
-                  rows={8}
-                  spellCheck={false}
-                  value={form.schemaText}
-                  placeholder='{"type":"object","properties":{"epochs":{"type":"integer","default":50,"minimum":1}}}'
-                  aria-label="训练参数 Schema JSON"
-                  onBlur={validateSchemaText}
-                  onChange={(event) => setForm((current) => ({ ...current, schemaText: event.target.value }))}
-                />
-                {schemaError ? (
-                  <p className="device-detail-hint is-error" role="alert">Schema JSON 不合法：{schemaError}</p>
+                <div className="platform-section-heading">
+                  <h3 className="device-section-title">
+                    训练参数
+                    <small>共 {paramRows.length} 个；常用参数直接出现在训练表单，高级参数折叠收起</small>
+                  </h3>
+                  <button className="secondary-button compact" type="button" onClick={() => setParamRows((current) => [...current, emptyParamRow()])}>
+                    <Plus size={13} />
+                    新增参数
+                  </button>
+                </div>
+                {paramRows.length === 0 ? (
+                  <p className="device-detail-hint">暂无参数，点击「新增参数」添加；不配置时训练表单无参数可调。</p>
                 ) : (
-                  <p className="device-detail-hint">失焦时自动校验 JSON；properties 参数会渲染为下方只读卡片。</p>
+                  <>
+                    <div className="platform-param-grid">
+                      {commonParamCards.map(renderParamCard)}
+                    </div>
+                    {advancedParamCards.length ? (
+                      <details className="platform-param-advanced">
+                        <summary>高级参数（{advancedParamCards.length}）</summary>
+                        <div className="platform-param-grid">
+                          {advancedParamCards.map(renderParamCard)}
+                        </div>
+                      </details>
+                    ) : null}
+                  </>
                 )}
-                {schemaProperties.length ? (
-                  <div className="platform-schema-params">
-                    {schemaProperties.map(([name, property]) => (
-                      <div className="platform-schema-param" key={name}>
-                        <strong title={name}>{name}</strong>
-                        <span>{property?.type ?? "未声明类型"}</span>
-                        <small>
-                          默认值：{property && "default" in property ? JSON.stringify(property.default) ?? "—" : "—"}
-                        </small>
-                      </div>
-                    ))}
-                  </div>
-                ) : parsedSchema ? (
-                  <p className="device-detail-hint">当前 Schema 未声明 properties。</p>
-                ) : null}
               </article>
 
               <article className="panel platform-section">

@@ -56,10 +56,11 @@ import {
 } from "../../../lib/automl-data-api";
 import { DynamicAssetImage } from "../../components/dynamic-asset-image";
 
+// 码值与常量表 TASK_TYPE 分组对齐（automl-api.md §8.1）
 const TASK_TYPES = [
   { value: "OBJECT_DETECTION", label: "目标检测" },
-  { value: "CLASSIFICATION", label: "图像分类" },
-  { value: "SEGMENTATION", label: "图像分割" },
+  { value: "IMAGE_CLASSIFICATION", label: "图像分类" },
+  { value: "INSTANCE_SEGMENTATION", label: "实例分割" },
 ];
 
 type InspectorTab = "materials" | "versions" | "models" | "items" | "classes";

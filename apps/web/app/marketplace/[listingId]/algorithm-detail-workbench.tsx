@@ -131,14 +131,15 @@ export function AlgorithmDetailWorkbench({ listingId, previewMode }: { listingId
     isAutomlListing && realDetail && edgeModel && edgeModel.modelId === realDetail.modelCode,
   );
 
+  const inferenceAliasPath = realDetail?.apiAlias ? `/${realDetail.apiAlias}/detect` : null;
   const realInference = useMemo<DemoRealInference | null>(
     () => (deployed && edgeModel
       ? {
         modelName: `edge 常驻 · ${edgeModel.modelId} · ${edgeModel.version}`,
-        detect: async (image, threshold) => (await detectWithEdgeModel(image, threshold)).detections,
+        detect: async (image, threshold) => (await detectWithEdgeModel(image, threshold, inferenceAliasPath ?? undefined)).detections,
       }
       : null),
-    [deployed, edgeModel],
+    [deployed, edgeModel, inferenceAliasPath],
   );
 
   // 部署对话框：拉在线设备
@@ -218,7 +219,7 @@ export function AlgorithmDetailWorkbench({ listingId, previewMode }: { listingId
     ? "该算法尚未部署到设备（或设备当前激活的是其他模型）；在右侧部署并激活后即可真实体验。"
     : null;
   const codeSample = isAutomlListing
-    ? `# 部署激活后，在设备上直接调用推理服务\ncurl -X POST "http://<设备IP>:8100/v1/detect" \\\n  -F "image=@sample.jpg" \\\n  -F "threshold=0.25"`
+    ? `# 部署激活后，在设备上直接调用推理服务（设置了服务别名则按别名寻址）\ncurl -X POST "http://<设备IP>:8100${realDetail?.apiAlias ? `/${realDetail.apiAlias}/detect` : "/v1/detect"}" \\\n  -F "image=@sample.jpg" \\\n  -F "threshold=0.25"`
     : `curl -X POST "https://api.sensemu.cn${listing.endpoint_url}" \\\n  -H "Authorization: Bearer $SENSEMU_API_KEY" \\\n  -F "image=@sample.jpg"`;
 
   return (

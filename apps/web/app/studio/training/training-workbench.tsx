@@ -38,6 +38,7 @@ import {
   listAutomlPlatformOptions,
 } from "../../../lib/automl-platform-api";
 import { createAutomlTrainingTask } from "../../../lib/automl-training-api";
+import { coerceParamValue, splitSchemaParams } from "../../../lib/automl-platform-schema";
 import { automlTaskType } from "../../data-market/data-market-workbench";
 
 // 可训练版本选项：来自数据市场已上架（LISTED）的版本
@@ -46,16 +47,8 @@ type VersionOption = {
   version: { id: string; version_number: number; asset_count: number; task_type: string };
 };
 
-// 新建训练的固定参数项；aliases 对应训练平台 Schema 里的参数键（契约 §8.3 参数预填）
-const trainingParamFields = [
-  { key: "epochs", aliases: ["epochs"], label: "训练轮次", min: 1, max: 500 },
-  { key: "image_size", aliases: ["image_size", "imgsz"], label: "图像尺寸", min: 320, max: 1536 },
-  { key: "batch_size", aliases: ["batch_size", "batch"], label: "批量大小", min: 1, max: 256 },
-  { key: "seed", aliases: ["seed"], label: "随机种子", min: 0, max: 2147483647 },
-] as const;
-
-type TrainingParamKey = (typeof trainingParamFields)[number]["key"];
-
+// 训练参数完全由所选平台的 configSchemaJson 驱动（平台维护页可配置参数与常用/高级分组），
+// 前端不再维护固定参数清单；提交时值按属性类型还原，空值省略由服务端合并默认值。
 const statusLabels: Record<string, string> = {
   queued: "排队中",
   preparing: "准备中",
@@ -216,12 +209,7 @@ export function TrainingWorkbench() {
   const [datasetVersionId, setDatasetVersionId] = useState("");
   const [platformId, setPlatformId] = useState("");
   const [baseModelId, setBaseModelId] = useState("");
-  const [params, setParams] = useState<Record<TrainingParamKey, number>>({
-    epochs: 100,
-    image_size: 640,
-    batch_size: 16,
-    seed: 42,
-  });
+  const [params, setParams] = useState<Record<string, string>>({});
   const [acceptanceModelVersionId, setAcceptanceModelVersionId] = useState("");
   const [acceptanceDatasetVersionId, setAcceptanceDatasetVersionId] = useState("");
   const [acceptanceImageSize, setAcceptanceImageSize] = useState(640);
@@ -241,11 +229,17 @@ export function TrainingWorkbench() {
       ?? null,
     [compatiblePlatforms, platformId],
   );
+  // 基础模型按任务类型过滤：分割数据集只列 -seg 权重，避免拿检测权重配多边形标签
+  const platformBaseModels = useMemo(
+    () => (selectedPlatform?.baseModels ?? [])
+      .filter((model) => automlTaskType(model.taskType ?? "") === selectedTaskType),
+    [selectedPlatform, selectedTaskType],
+  );
   const selectedBaseModel = useMemo(
-    () => selectedPlatform?.baseModels.find((model) => String(model.id) === baseModelId)
-      ?? selectedPlatform?.baseModels[0]
+    () => platformBaseModels.find((model) => String(model.id) === baseModelId)
+      ?? platformBaseModels[0]
       ?? null,
-    [baseModelId, selectedPlatform],
+    [baseModelId, platformBaseModels],
   );
 
   const acceptanceOptions = useMemo(() => {
@@ -351,48 +345,74 @@ export function TrainingWorkbench() {
     );
   }, [acceptanceOptions]);
 
-  // 解析固定参数在平台 Schema 里的真实参数键与定义（如 image_size → imgsz）
-  function resolveSchemaProperty(
-    option: AutomlPlatformOption | null,
-    aliases: readonly string[],
-  ): { key: string; property: AutomlPlatformConfigProperty } | null {
-    const properties = option?.configSchemaJson?.properties ?? {};
-    for (const alias of aliases) {
-      const property = properties[alias];
-      if (property) return { key: alias, property };
-    }
-    return null;
-  }
-
-  function schemaEnumValues(property: AutomlPlatformConfigProperty | null | undefined): number[] | null {
-    const values = property?.enum?.filter((value): value is number => typeof value === "number");
-    return values?.length ? values : null;
-  }
+  const paramGroups = useMemo(
+    () => splitSchemaParams(selectedPlatform?.configSchemaJson),
+    [selectedPlatform],
+  );
 
   // 参数预填：平台 Schema default ⊕ 基础模型 defaultConfigJson 覆盖（契约 §8.3）
   function applyParameterDefaults(option: AutomlPlatformOption | null, baseModel: AutomlBaseModel | null) {
-    setParams((current) => {
-      const next = { ...current };
-      for (const field of trainingParamFields) {
-        const resolved = resolveSchemaProperty(option, field.aliases);
-        const overlay = field.aliases
-          .map((alias) => baseModel?.defaultConfigJson?.[alias])
-          .find((value) => value !== undefined);
-        const raw = overlay ?? resolved?.property.default;
-        if (typeof raw !== "number" || !Number.isFinite(raw)) continue;
-        const enumValues = schemaEnumValues(resolved?.property);
-        next[field.key] = enumValues && !enumValues.includes(raw) ? enumValues[0] : raw;
-      }
-      return next;
-    });
+    const next: Record<string, string> = {};
+    for (const [key, rawProperty] of Object.entries(option?.configSchemaJson?.properties ?? {})) {
+      const property = (rawProperty ?? {}) as AutomlPlatformConfigProperty;
+      const raw = baseModel?.defaultConfigJson?.[key] ?? property.default;
+      next[key] = raw == null || typeof raw === "object" ? "" : String(raw);
+    }
+    setParams(next);
+  }
+
+  function setParam(key: string, value: string) {
+    setParams((current) => ({ ...current, [key]: value }));
+  }
+
+  // 单个训练参数输入控件：enum → 下拉、布尔 → 是/否、数值 → 带范围的数字框、其余 → 文本
+  function renderParamField(key: string, property: AutomlPlatformConfigProperty) {
+    const label = typeof property.title === "string" && property.title ? property.title : key;
+    const value = params[key] ?? "";
+    const defaultHint = property.default === undefined
+      ? ""
+      : `（默认 ${typeof property.default === "boolean" ? (property.default ? "是" : "否") : String(property.default)}）`;
+    const enumValues = Array.isArray(property.enum) && property.enum.length ? property.enum : null;
+    return (
+      <label className="training-field" key={key}>
+        <span>{label}</span>
+        {enumValues ? (
+          <select value={value} onChange={(event) => setParam(key, event.target.value)}>
+            <option value="">跟随默认{defaultHint}</option>
+            {enumValues.map((candidate) => (
+              <option value={String(candidate)} key={String(candidate)}>{String(candidate)}</option>
+            ))}
+          </select>
+        ) : property.type === "boolean" ? (
+          <select value={value} onChange={(event) => setParam(key, event.target.value)}>
+            <option value="">跟随默认{defaultHint}</option>
+            <option value="true">是</option>
+            <option value="false">否</option>
+          </select>
+        ) : (
+          <input
+            type={property.type === "integer" || property.type === "number" ? "number" : "text"}
+            min={property.minimum != null ? String(property.minimum) : undefined}
+            max={property.maximum != null ? String(property.maximum) : undefined}
+            step={property.type === "integer" ? "1" : property.type === "number" ? "any" : undefined}
+            placeholder={property.default !== undefined ? `默认 ${String(property.default)}` : "选填"}
+            value={value}
+            onChange={(event) => setParam(key, event.target.value)}
+          />
+        )}
+      </label>
+    );
   }
 
   useEffect(() => {
     if (!compatiblePlatforms.length || compatiblePlatforms.some((option) => String(option.platformId) === platformId)) return;
     const first = compatiblePlatforms[0];
     setPlatformId(String(first.platformId));
-    applyParameterDefaults(first, first.baseModels[0] ?? null);
-  }, [compatiblePlatforms, platformId]);
+    const firstModel = first.baseModels.find(
+      (model) => automlTaskType(model.taskType ?? "") === selectedTaskType,
+    ) ?? first.baseModels[0] ?? null;
+    applyParameterDefaults(first, firstModel);
+  }, [compatiblePlatforms, platformId, selectedTaskType]);
 
   async function submitTraining(event: FormEvent) {
     event.preventDefault();
@@ -401,11 +421,11 @@ export function TrainingWorkbench() {
     setError(null);
     setNotice(null);
     try {
-      // 超参按平台 Schema 声明的参数键提交（如 imgsz/batch），Schema 未声明的按本字段名
+      // 提交全部 schema 参数：空值省略，由服务端按「平台默认 ⊕ 基础模型覆盖」合并
       const hyperParamsJson: Record<string, unknown> = {};
-      for (const field of trainingParamFields) {
-        const resolved = resolveSchemaProperty(selectedPlatform, field.aliases);
-        hyperParamsJson[resolved?.key ?? field.key] = params[field.key];
+      for (const { key, property } of [...paramGroups.common, ...paramGroups.advanced]) {
+        const value = coerceParamValue(property, params[key] ?? "");
+        if (value !== undefined) hyperParamsJson[key] = value;
       }
       const created = await createAutomlTrainingTask({
         name: runName.trim(),
@@ -593,7 +613,10 @@ export function TrainingWorkbench() {
                     );
                     setPlatformId(event.target.value);
                     setBaseModelId("");
-                    applyParameterDefaults(nextPlatform ?? null, nextPlatform?.baseModels[0] ?? null);
+                    const firstModel = nextPlatform?.baseModels.find(
+                      (model) => automlTaskType(model.taskType ?? "") === selectedTaskType,
+                    ) ?? nextPlatform?.baseModels[0] ?? null;
+                    applyParameterDefaults(nextPlatform ?? null, firstModel);
                   }}
                 >
                   {compatiblePlatforms.map((option) => (
@@ -607,48 +630,32 @@ export function TrainingWorkbench() {
                 <span>基础模型</span>
                 <select
                   value={String(selectedBaseModel?.id ?? "")}
-                  disabled={!selectedPlatform?.baseModels.length}
+                  disabled={!platformBaseModels.length}
                   onChange={(event) => {
                     setBaseModelId(event.target.value);
-                    const nextModel = selectedPlatform?.baseModels.find(
+                    const nextModel = platformBaseModels.find(
                       (model) => String(model.id) === event.target.value,
                     );
                     applyParameterDefaults(selectedPlatform, nextModel ?? null);
                   }}
                 >
-                  {!selectedPlatform?.baseModels.length ? <option value="">该平台暂无基础模型</option> : null}
-                  {selectedPlatform?.baseModels.map((model) => (
+                  {!platformBaseModels.length ? <option value="">该平台暂无匹配任务类型的基础模型</option> : null}
+                  {platformBaseModels.map((model) => (
                     <option value={String(model.id)} key={String(model.id)}>
                       {model.name}（{model.modelCode}）
                     </option>
                   ))}
                 </select>
               </label>
-              {trainingParamFields.map((field) => {
-                const resolved = resolveSchemaProperty(selectedPlatform, field.aliases);
-                const enumValues = schemaEnumValues(resolved?.property);
-                return (
-                  <label className="training-field" key={field.key}>
-                    <span>{typeof resolved?.property.title === "string" && resolved.property.title ? resolved.property.title : field.label}</span>
-                    {enumValues ? (
-                      <select
-                        value={params[field.key]}
-                        onChange={(event) => setParams((current) => ({ ...current, [field.key]: Number(event.target.value) }))}
-                      >
-                        {enumValues.map((value) => <option value={value} key={value}>{value}</option>)}
-                      </select>
-                    ) : (
-                      <input
-                        type="number"
-                        min={String(resolved?.property.minimum ?? field.min)}
-                        max={String(resolved?.property.maximum ?? field.max)}
-                        value={params[field.key]}
-                        onChange={(event) => setParams((current) => ({ ...current, [field.key]: Number(event.target.value) }))}
-                      />
-                    )}
-                  </label>
-                );
-              })}
+              {paramGroups.common.map(({ key, property }) => renderParamField(key, property))}
+              {paramGroups.advanced.length ? (
+                <details className="training-advanced-params">
+                  <summary>高级参数（{paramGroups.advanced.length}）</summary>
+                  <div className="training-advanced-params-body">
+                    {paramGroups.advanced.map(({ key, property }) => renderParamField(key, property))}
+                  </div>
+                </details>
+              ) : null}
             </div>
           ) : (
             <div className="training-inline-empty">

@@ -56,6 +56,21 @@ export async function stopEdgeInferenceSession(sessionId?: string): Promise<bool
   }
 }
 
+/** 关闭一机多模型常驻实例（MULTI_MODEL 部署模式，instanceId 为 mm-{deploymentId}）。 */
+export async function stopMultiModelInstance(deploymentId: string): Promise<boolean> {
+  try {
+    const response = await fetch(
+      `/edge-agent/v1/multi-model/${encodeURIComponent(deploymentId)}`,
+      { method: "DELETE", signal: AbortSignal.timeout(10_000) },
+    );
+    if (!response.ok) return false;
+    const body = await response.json().catch(() => ({})) as { stopped?: boolean } | null;
+    return Boolean(body && body.stopped);
+  } catch {
+    return false;
+  }
+}
+
 export async function renewEdgeInferenceSession(): Promise<EdgeInferenceSession | null> {
   const response = await fetch("/edge-agent/v1/inference-sessions/current", {
     signal: AbortSignal.timeout(10_000),
@@ -90,20 +105,77 @@ export async function detectWithSessionModel(
     modelId?: string;
     modelVersion?: string;
     image?: { width?: number; height?: number };
-    detections?: { className: string; confidence: number; bbox: { x1: number; y1: number; x2: number; y2: number } }[];
+    detections?: {
+      className: string;
+      confidence: number;
+      bbox: { x1: number; y1: number; x2: number; y2: number };
+      segmentation?: number[][] | null;
+    }[];
   };
-  // /v1/detect 返回像素坐标 bbox，需换算为归一化 0-1（与 edge-inference-api 同约定）
+  // /v1/detect 返回像素坐标 bbox，换算为图片百分比 0-100（与 edge-inference-api 同约定）
   const width = body.image?.width || 1;
   const height = body.image?.height || 1;
   return {
     modelName: `${body.modelId ?? "model"} · v${body.modelVersion ?? ""}`,
-    detections: (body.detections ?? []).map((detection) => ({
-      label: detection.className,
-      confidence: detection.confidence,
-      x: Math.max(0, detection.bbox.x1 / width),
-      y: Math.max(0, detection.bbox.y1 / height),
-      width: Math.min(1, Math.max(0, (detection.bbox.x2 - detection.bbox.x1) / width)),
-      height: Math.min(1, Math.max(0, (detection.bbox.y2 - detection.bbox.y1) / height)),
-    })),
+    detections: (body.detections ?? []).map((detection) => {
+      // 分割：每条外轮廓一个像素平铺环 → 百分比顶点（与 edge-inference-api 同约定）
+      const rings = Array.isArray(detection.segmentation) ? detection.segmentation : [];
+      const points = rings
+        .map((flat) => {
+          if (!Array.isArray(flat) || flat.length < 6 || !flat.every((value) => Number.isFinite(value))) return null;
+          return Array.from({ length: flat.length / 2 }, (_, index) => ({
+            x: (flat[index * 2] / width) * 100,
+            y: (flat[index * 2 + 1] / height) * 100,
+          }));
+        })
+        .filter((ring): ring is { x: number; y: number }[] => ring !== null);
+      return {
+        label: detection.className,
+        confidence: detection.confidence,
+        x: (Math.max(0, detection.bbox.x1 / width)) * 100,
+        y: (Math.max(0, detection.bbox.y1 / height)) * 100,
+        width: (Math.min(1, Math.max(0, (detection.bbox.x2 - detection.bbox.x1) / width))) * 100,
+        height: (Math.min(1, Math.max(0, (detection.bbox.y2 - detection.bbox.y1) / height))) * 100,
+        points: points.length > 0 ? points : null,
+      };
+    }),
   };
+}
+
+// ---- 推理服务生命周期控制（常驻实例 + 临时会话实例），走设备管理 API（/edge-agent 代理）----
+
+async function postServiceControl(path: string): Promise<boolean> {
+  try {
+    const response = await fetch(`/edge-agent${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) return false;
+    const body = await response.json().catch(() => ({})) as Record<string, unknown> | null;
+    return Boolean(body && Object.values(body).some((value) => value === true));
+  } catch {
+    return false;
+  }
+}
+
+/** 重启常驻推理服务（当前激活模型不变，进程重建）。 */
+export function restartResidentInferenceService(): Promise<boolean> {
+  return postServiceControl("/v1/services/resident/restart");
+}
+
+/** 关闭常驻推理服务：进程停止，看门狗不再自动拉起，直到显式启动。 */
+export function stopResidentInferenceService(): Promise<boolean> {
+  return postServiceControl("/v1/services/resident/stop");
+}
+
+/** 启动常驻推理服务（关闭后重新拉起）。 */
+export function startResidentInferenceService(): Promise<boolean> {
+  return postServiceControl("/v1/services/resident/start");
+}
+
+/** 重启临时推理会话：按同一模型销毁重建，临时状态文件随之清理重建。 */
+export function restartEdgeInferenceSession(): Promise<boolean> {
+  return postServiceControl("/v1/services/session/restart");
 }

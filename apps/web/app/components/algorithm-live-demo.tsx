@@ -22,6 +22,21 @@ function directBoxStyle(box: AlgorithmCatalogItem["preview"]["boxes"][number]): 
   return { left: `${box.x}%`, top: `${box.y}%`, width: `${box.width}%`, height: `${box.height}%` };
 }
 
+// 分割区域按类别着色：多目标（如多条裂纹）各自成色，轮廓与标签角标同色呼应，
+// 否则单色细描边压在灰度图上几乎看不出圈中的区域
+const DEMO_REGION_COLORS = [
+  "#c98af5", "#5ec9a0", "#f5a94d", "#6aa8f5",
+  "#f56a8e", "#a3d65c", "#f5875c", "#5cd0f5",
+];
+
+function demoRegionColor(label: string): string {
+  let hash = 0;
+  for (let index = 0; index < label.length; index++) {
+    hash = (hash * 31 + label.charCodeAt(index)) >>> 0;
+  }
+  return DEMO_REGION_COLORS[hash % DEMO_REGION_COLORS.length];
+}
+
 export type DemoRealBox = {
   label: string;
   confidence: number;
@@ -29,6 +44,9 @@ export type DemoRealBox = {
   y: number;
   width: number;
   height: number;
+  // 分割模型：实例掩码多边形（每条外轮廓一环，图片百分比 0-100）；检测模型无此字段。
+  // 细长实例常断成多个连通块，需要多环完整呈现（ultralytics plot 语义）
+  points?: { x: number; y: number }[][] | null;
 };
 
 export type DemoRealInference = {
@@ -74,15 +92,11 @@ export function AlgorithmLiveDemo({ listing, realInference, runDisabled, sampleO
   const visibleBoxes = useMemo(
     () => {
       if (realBoxes) {
-        // 真实推理框是归一化 0-1，directBoxStyle 按百分比定位，这里统一 ×100
+        // 真实推理框已是图片百分比 0-100（edge-inference-api / edge-session-api 统一换算），直接定位
         return realBoxes
           .filter((box) => box.confidence >= confidence)
           .map((box) => ({
             ...box,
-            x: box.x * 100,
-            y: box.y * 100,
-            width: box.width * 100,
-            height: box.height * 100,
             confidence: box.confidence.toFixed(2),
           }));
       }
@@ -245,13 +259,50 @@ export function AlgorithmLiveDemo({ listing, realInference, runDisabled, sampleO
             {activeImage ? (
               <>
                 <span className="algorithm-demo-backdrop" aria-hidden="true" />
-                <div className="algorithm-demo-image-frame" style={containedFrameStyle} aria-hidden="true">
+                <div className="algorithm-demo-image-frame" style={containedFrameStyle}>
                   <img src={activeImage} alt="" onLoad={captureImageRatio} />
-                  {hasResult ? visibleBoxes.map((box, index) => (
-                    <span className="algorithm-demo-box" key={`${box.label}-${index}`} style={directBoxStyle(box)}>
-                      <small>{box.label} {box.confidence != null ? Number(box.confidence).toFixed(2) : ""}</small>
-                    </span>
-                  )) : null}
+                  {hasResult ? visibleBoxes.map((box, index) => {
+                    const rings = (box as { points?: { x: number; y: number }[][] | null }).points;
+                    if (rings && rings.length > 0) {
+                      // 掩码多环填充 + 外围检测框描边（对齐 ultralytics show()：mask + bbox + label）
+                      const maskPath = rings
+                        .filter((ring) => ring.length >= 3)
+                        .map((ring) => `M ${ring.map((point) => `${point.x} ${point.y}`).join(" L ")} Z`)
+                        .join(" ");
+                      // bbox 贴图像顶时标签放框内，避免悬出画布
+                      const chipInside = box.y < 3;
+                      return (
+                        <span
+                          className="algorithm-demo-polygon-entry"
+                          key={`${box.label}-${index}`}
+                          style={{ "--demo-region-color": demoRegionColor(box.label) } as CSSProperties}
+                        >
+                          <svg className="algorithm-demo-polygon" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                            <path d={maskPath} vectorEffect="non-scaling-stroke" />
+                            <rect
+                              className="algorithm-demo-polygon-frame"
+                              x={box.x}
+                              y={box.y}
+                              width={box.width}
+                              height={box.height}
+                              vectorEffect="non-scaling-stroke"
+                            />
+                          </svg>
+                          <span
+                            className={`algorithm-demo-box is-polygon-chip${chipInside ? " is-inside" : ""}`}
+                            style={{ left: `${box.x}%`, top: `${box.y}%` }}
+                          >
+                            <small>{box.label} {box.confidence != null ? Number(box.confidence).toFixed(2) : ""}</small>
+                          </span>
+                        </span>
+                      );
+                    }
+                    return (
+                      <span className="algorithm-demo-box" key={`${box.label}-${index}`} style={directBoxStyle(box)}>
+                        <small>{box.label} {box.confidence != null ? Number(box.confidence).toFixed(2) : ""}</small>
+                      </span>
+                    );
+                  }) : null}
                 </div>
               </>
             ) : (

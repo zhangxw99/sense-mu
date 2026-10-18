@@ -34,6 +34,8 @@ export async function predictSamDetections(input: {
   imageDataUrl: string;
   classes: string[];
   conf?: number;
+  // 分割任务传 true：响应的检出会带 segmentation 多边形（像素坐标平铺）
+  polygon?: boolean;
 }): Promise<SamPredictResult> {
   const response = await fetch("/sam-api/predict", {
     method: "POST",
@@ -42,6 +44,7 @@ export async function predictSamDetections(input: {
       image: input.imageDataUrl,
       classes: input.classes,
       ...(input.conf != null ? { conf: input.conf } : {}),
+      ...(input.polygon ? { polygon: true } : {}),
     }),
     signal: AbortSignal.timeout(SAM_API_TIMEOUT_MS),
   });
@@ -55,11 +58,14 @@ export async function predictSamDetections(input: {
   return {
     imageSize: [Number(imageSize[0] ?? 0), Number(imageSize[1] ?? 0)],
     detections: rawDetections.map((entry) => {
-      const record = entry as { class?: unknown; conf?: unknown; bbox?: unknown };
+      const record = entry as { class?: unknown; conf?: unknown; bbox?: unknown; segmentation?: unknown };
       return {
         class: String(record.class ?? ""),
         conf: Number(record.conf ?? 0),
         bbox: Array.isArray(record.bbox) ? record.bbox.map((value) => Number(value)) : [],
+        segmentation: Array.isArray(record.segmentation)
+          ? record.segmentation.map((value) => Number(value))
+          : null,
       };
     }),
   };

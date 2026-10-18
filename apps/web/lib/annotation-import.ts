@@ -6,6 +6,11 @@ export type ParsedBbox = {
   annotationJson: Record<string, unknown>;
 };
 
+// YOLO 行解析结果：5 字段为 bbox（中心点基准），更多字段为 YOLO-seg 多边形（归一化顶点）
+export type YoloShape =
+  | { kind: "bbox"; classIndex: number; x: number; y: number; w: number; h: number }
+  | { kind: "polygon"; classIndex: number; points: [number, number][] };
+
 export type PairedImport = {
   image: File;
   annotations: ParsedBbox[];
@@ -40,23 +45,43 @@ export function isZipFile(file: File): boolean {
   return ZIP_EXTENSIONS.test(file.name) || file.type === "application/zip";
 }
 
-// YOLO txt：每行 `classIndex cx cy w h`，坐标已归一化
-export function parseYoloTxt(text: string): { classIndex: number; x: number; y: number; w: number; h: number }[] {
-  const boxes: { classIndex: number; x: number; y: number; w: number; h: number }[] = [];
+// YOLO txt：`classIndex cx cy w h` 为检测框；`classIndex x1 y1 x2 y2 ...`（成对且 >5 字段）
+// 为 YOLO-seg 分割多边形，坐标均归一化
+export function parseYoloTxt(text: string): YoloShape[] {
+  const shapes: YoloShape[] = [];
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line) continue;
     const parts = line.split(/\s+/);
     if (parts.length < 5) throw new Error(`YOLO 标注行格式错误：${line.slice(0, 60)}`);
     const classIndex = Number.parseInt(parts[0], 10);
-    const [cx, cy, w, h] = parts.slice(1, 5).map(Number);
-    if (!Number.isInteger(classIndex) || classIndex < 0
-      || [cx, cy, w, h].some((v) => !Number.isFinite(v))) {
+    if (!Number.isInteger(classIndex) || classIndex < 0) {
       throw new Error(`YOLO 标注行数值错误：${line.slice(0, 60)}`);
     }
-    boxes.push({ classIndex, x: cx - w / 2, y: cy - h / 2, w, h });
+    if (parts.length > 5) {
+      // 分割多边形：坐标数必须为偶数且 ≥ 6（3 个顶点）
+      if ((parts.length - 1) % 2 !== 0 || parts.length < 7) {
+        throw new Error(`YOLO 多边形行坐标数非法：${line.slice(0, 60)}`);
+      }
+      const points: [number, number][] = [];
+      for (let i = 1; i < parts.length; i += 2) {
+        const x = Number(parts[i]);
+        const y = Number(parts[i + 1]);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+          throw new Error(`YOLO 标注行数值错误：${line.slice(0, 60)}`);
+        }
+        points.push([x, y]);
+      }
+      shapes.push({ kind: "polygon", classIndex, points });
+      continue;
+    }
+    const [cx, cy, w, h] = parts.slice(1, 5).map(Number);
+    if ([cx, cy, w, h].some((v) => !Number.isFinite(v))) {
+      throw new Error(`YOLO 标注行数值错误：${line.slice(0, 60)}`);
+    }
+    shapes.push({ kind: "bbox", classIndex, x: cx - w / 2, y: cy - h / 2, w, h });
   }
-  return boxes;
+  return shapes;
 }
 
 // Pascal VOC xml：/object/name + bndbox 像素坐标，按 <size> 归一化
@@ -142,11 +167,16 @@ export async function pairAnnotationFiles(
         });
       }
     } else {
-      for (const box of parseYoloTxt(text)) {
-        pair.annotations.push({
-          labelName: yoloIndexToName(box.classIndex),
-          annotationJson: { type: "bbox", x: box.x, y: box.y, w: box.w, h: box.h },
-        });
+      for (const shape of parseYoloTxt(text)) {
+        pair.annotations.push(shape.kind === "polygon"
+          ? {
+              labelName: yoloIndexToName(shape.classIndex),
+              annotationJson: { type: "polygon", points: shape.points },
+            }
+          : {
+              labelName: yoloIndexToName(shape.classIndex),
+              annotationJson: { type: "bbox", x: shape.x, y: shape.y, w: shape.w, h: shape.h },
+            });
       }
     }
   }

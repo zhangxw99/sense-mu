@@ -31,6 +31,7 @@ import {
   isDeploymentInProgress,
   listAutomlDeviceDeployments,
   listAutomlDevices,
+  deviceTrainingCapability,
   setAutomlDeviceStatus,
 } from "../../lib/automl-device-api";
 import {
@@ -61,6 +62,12 @@ const accessModeLabels: Record<string, string> = {
 const serviceStatusLabels: Record<string, string> = {
   RUNNING: "运行中",
   STOPPED: "已停止",
+};
+
+// 服务名显示用中文，英文名保留在 title（端侧上报的 name 不变）
+const serviceNameLabels: Record<string, string> = {
+  "edge-service": "边缘服务",
+  "inference-service": "推理服务",
 };
 
 const terminalDeploymentNotices: Record<string, string> = {
@@ -561,6 +568,20 @@ export function DevicesWorkbench() {
                 </span>
                 <span className="device-cell">
                   {deviceTypeLabels[device.deviceType] ?? device.deviceType} · {accessModeLabels[device.accessMode] ?? device.accessMode}
+                  {(() => {
+                    const training = deviceTrainingCapability(device);
+                    // 能力未知（旧版端侧未上报）不显示标识，避免误导
+                    if (training === null) return null;
+                    return (
+                      <span
+                        className="device-status-chip device-training-chip"
+                        data-status={training ? "ONLINE" : "STALE"}
+                        title={training ? "端侧已启用训练能力，可下发训练任务" : "端侧未启用训练能力，不能下发训练任务"}
+                      >
+                        {training ? "支持训练" : "仅推理"}
+                      </span>
+                    );
+                  })()}
                 </span>
                 <span className="device-cell" title={device.currentModel ?? undefined}>{device.currentModel ?? "—"}</span>
                 <span className="device-cell">{device.agentVersion ?? "—"}</span>
@@ -781,10 +802,16 @@ function DeviceDetailView({ device }: { device: AutomlDevice }) {
   // 设备部署历史：推理服务块（ACTIVE 部署的 serviceInfo）与跳转高亮的数据源
   const [deployments, setDeployments] = useState<AutomlDeviceDeployment[]>([]);
   const [highlightId, setHighlightId] = useState<string | null>(null);
+  const [serviceAction, setServiceAction] = useState<string | null>(null);
+  const [serviceNotice, setServiceNotice] = useState<string | null>(null);
+  const [serviceDetailOpen, setServiceDetailOpen] = useState<string | null>(null);
   const historyRef = useRef<HTMLDivElement | null>(null);
+  // 设备离线后心跳中断，服务状态是最后一次上报的快照，不可再当实时值，也不可操作
+  const deviceOnline = device.statusCd === "ONLINE";
 
   useEffect(() => {
     let cancelled = false;
+    setServiceDetailOpen(null);
     void (async () => {
       try {
         const list = await listAutomlDeviceDeployments(device.deviceId);
@@ -799,9 +826,48 @@ function DeviceDetailView({ device }: { device: AutomlDevice }) {
   }, [device.deviceId]);
 
   const activeDeployment = deployments.find((deployment) => deployment.statusCd === "ACTIVE") ?? null;
-  const serviceInfo = activeDeployment?.serviceInfo ?? null;
+  // 模型编码 → 训练名称（部署历史富化字段）：MDL-TT… 编码无法区分模型，展示优先用名称
+  const modelNameByCode = new Map<string, string>();
+  for (const deployment of deployments) {
+    const code = deployment.serviceInfo?.modelCode;
+    if (code && deployment.modelName && !modelNameByCode.has(String(code))) {
+      modelNameByCode.set(String(code), deployment.modelName);
+    }
+  }
 
-  // 点推理服务块 → 滚动并高亮来源部署的详情
+  // 服务生命周期控制：重启/关闭/启动（走设备管理 API /edge-agent，状态随心跳刷新）
+  const controlService = useCallback(async (
+    action: "restart" | "stop" | "start",
+    service: { name: string; instanceId?: string | null; port?: number | null },
+  ) => {
+    const isSession = (service.instanceId ?? "").startsWith("session-");
+    const isMultiModel = (service.instanceId ?? "").startsWith("mm-");
+    const key = `${service.name}-${service.port ?? "0"}`;
+    setServiceAction(key);
+    setServiceNotice(null);
+    try {
+      const mod = await import("../../lib/edge-session-api");
+      let ok: boolean;
+      if (isMultiModel && action === "stop") {
+        ok = await mod.stopMultiModelInstance((service.instanceId ?? "").slice(3));
+      } else if (isSession) {
+        ok = action === "restart" ? await mod.restartEdgeInferenceSession() : await mod.stopEdgeInferenceSession();
+      } else if (action === "restart") {
+        ok = await mod.restartResidentInferenceService();
+      } else if (action === "stop") {
+        ok = await mod.stopResidentInferenceService();
+      } else {
+        ok = await mod.startResidentInferenceService();
+      }
+      setServiceNotice(ok ? "指令已下发，服务状态以下一次心跳上报为准" : "指令未确认成功，请稍后重试或检查设备管理端口");
+    } catch {
+      setServiceNotice("操作失败：设备管理端口不可达");
+    } finally {
+      window.setTimeout(() => setServiceAction(null), 800);
+    }
+  }, []);
+
+  // 点服务行里的「部署来源」→ 滚动并高亮下方部署历史的来源行
   const focusDeployment = useCallback((deploymentId: string) => {
     setHighlightId(deploymentId);
     historyRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -810,7 +876,7 @@ function DeviceDetailView({ device }: { device: AutomlDevice }) {
   return (
     <>
       <article className="panel device-section">
-        <h3 className="device-section-title">资源占用 <small>随心跳更新 · 上报于 {formatTime(device.lastOnlineAt)}</small></h3>
+        <h3 className="device-section-title">资源占用 <small>{deviceOnline ? "随心跳更新" : "设备离线"} · 上报于 {formatTime(device.lastOnlineAt)}</small></h3>
         {resources && (resources.memTotalMb != null || resources.diskFreeMb != null) ? (
           <div className="device-resource-grid">
             <div className="device-resource-card">
@@ -842,7 +908,12 @@ function DeviceDetailView({ device }: { device: AutomlDevice }) {
       </article>
 
       <article className="panel device-section">
-        <h3 className="device-section-title">运行服务 <small>由边缘计算服务上报</small></h3>
+        <h3 className="device-section-title">
+          运行服务
+          <small>{deviceOnline
+            ? `由边缘计算服务随心跳上报 · 上报于 ${formatTime(device.lastOnlineAt)}`
+            : `设备离线 · 以下为最后一次心跳上报的状态（${formatTime(device.lastOnlineAt)}）`}</small>
+        </h3>
         {services.length ? (
           <div className="device-service-table">
             <div className="device-service-head" aria-hidden="true">
@@ -852,19 +923,176 @@ function DeviceDetailView({ device }: { device: AutomlDevice }) {
               <span>端口</span>
               <span>进程</span>
               <span>已运行</span>
+              <span>操作</span>
             </div>
-            {services.map((service) => (
-              <div className="device-service-row" key={service.name}>
-                <span className="device-service-name">{service.name}</span>
-                <span className="device-service-chip" data-status={service.status}>
-                  {serviceStatusLabels[service.status] ?? service.status}
-                </span>
-                <span className="device-cell">{service.version ?? "—"}</span>
-                <span className="device-cell">{service.port ?? "—"}</span>
-                <span className="device-cell">{service.pid ?? "—"}</span>
-                <span className="device-cell">{formatUptime(service.uptimeSec)}</span>
-              </div>
-            ))}
+            {services.map((service) => {
+              // inference-service 附加信息：优先心跳 services.model，回退探针块。
+              // 摘要行显示「实际加载的模型」（部署显示名优先），模型编码/运行时/部署来源收进折叠详情
+              const probe = device.lastStateJson?.inference ?? null;
+              const model = service.model
+                ?? (service.name === "inference-service" && !(service.instanceId ?? "").startsWith("session-") && probe?.modelLoaded
+                  ? { modelId: probe.activeModelId, modelVersion: probe.activeModelVersion, runtime: probe.runtime ?? probe.executionProvider }
+                  : null);
+              const isInference = service.name === "inference-service";
+              const isSession = (service.instanceId ?? "").startsWith("session-");
+              const isMultiModel = (service.instanceId ?? "").startsWith("mm-");
+              const running = service.status === "RUNNING";
+              const actionKey = `${service.name}-${service.port ?? "0"}`;
+              const loadedModelName = model?.modelId
+                ? modelNameByCode.get(String(model.modelId)) ?? String(model.modelId)
+                : null;
+              const loadedModelVersion = model?.modelVersion ? String(model.modelVersion) : null;
+              return (
+                <div className="device-service-row" key={actionKey}>
+                  <span className="device-service-name">
+                    <span className="device-service-name-main">
+                      {isSession ? <small className="device-service-kind">临时实例</small> : null}
+                      {isMultiModel ? <small className="device-service-kind">多模型实例</small> : null}
+                      <strong className="device-service-title" title={service.name}>
+                        {serviceNameLabels[service.name] ?? service.name}
+                      </strong>
+                    </span>
+                    {isInference && loadedModelName ? (
+                      <span className="device-service-name-sub">
+                        <small className="device-service-model">
+                          {isSession ? "会话模型 " : "模型 "}{loadedModelName}{loadedModelVersion ? ` · ${loadedModelVersion}` : ""}
+                        </small>
+                        <button
+                          type="button"
+                          className={`device-service-detail-toggle${serviceDetailOpen === actionKey ? " is-open" : ""}`}
+                          aria-expanded={serviceDetailOpen === actionKey}
+                          aria-label="运行详情"
+                          onClick={() => setServiceDetailOpen(serviceDetailOpen === actionKey ? null : actionKey)}
+                        >
+                          详情
+                        </button>
+                      </span>
+                    ) : null}
+                  </span>
+                  <span
+                    className="device-service-chip"
+                    data-status={deviceOnline ? service.status : "STALE"}
+                    title={deviceOnline ? undefined : "设备离线，以上一次心跳上报为准"}
+                  >
+                    {deviceOnline ? (serviceStatusLabels[service.status] ?? service.status) : "状态未知"}
+                  </span>
+                  <span className="device-cell">{service.version ?? "—"}</span>
+                  <span className="device-cell">{service.port ?? "—"}</span>
+                  <span className="device-cell">{service.pid ?? "—"}</span>
+                  <span className="device-cell">{formatUptime(service.uptimeSec)}</span>
+                  <span className="device-service-actions">
+                    {isInference && isMultiModel ? (
+                      <button
+                        type="button"
+                        className="device-service-action is-danger"
+                        disabled={!deviceOnline || serviceAction === actionKey || !running}
+                        title={!deviceOnline ? "设备离线，无法操作" : "关闭该多模型推理实例（其他实例与常驻服务不受影响）"}
+                        onClick={() => {
+                          if (window.confirm("确认关闭该多模型推理实例？关闭后如需恢复请重新部署该模型。")) {
+                            void controlService("stop", service);
+                          }
+                        }}
+                      >
+                        关闭
+                      </button>
+                    ) : isInference ? (
+                      <>
+                        <button
+                          type="button"
+                          className="device-service-action"
+                          disabled={!deviceOnline || serviceAction === actionKey || !running}
+                          title={!deviceOnline
+                            ? "设备离线，无法操作"
+                            : running ? "重启该推理服务（当前激活模型不变）" : "服务未运行"}
+                          onClick={() => void controlService("restart", service)}
+                        >
+                          重启
+                        </button>
+                        {isSession ? (
+                          <button
+                            type="button"
+                            className="device-service-action is-danger"
+                            disabled={!deviceOnline || serviceAction === actionKey || !running}
+                            title={!deviceOnline ? "设备离线，无法操作" : "关闭临时实例并清理其临时状态文件"}
+                            onClick={() => {
+                              if (window.confirm("确认关闭该临时推理实例？其临时状态文件将被清理。")) {
+                                void controlService("stop", service);
+                              }
+                            }}
+                          >
+                            关闭
+                          </button>
+                        ) : running ? (
+                          <button
+                            type="button"
+                            className="device-service-action is-danger"
+                            disabled={!deviceOnline || serviceAction === actionKey}
+                            title={!deviceOnline
+                              ? "设备离线，无法操作"
+                              : "关闭常驻推理服务（看门狗不再自动拉起，直到显式启动）"}
+                            onClick={() => {
+                              if (window.confirm("确认关闭常驻推理服务？关闭后不再自动拉起，需要时点击「启动」。")) {
+                                void controlService("stop", service);
+                              }
+                            }}
+                          >
+                            关闭
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="device-service-action"
+                            disabled={!deviceOnline || serviceAction === actionKey}
+                            title={!deviceOnline ? "设备离线，无法操作" : "启动常驻推理服务"}
+                            onClick={() => void controlService("start", service)}
+                          >
+                            启动
+                          </button>
+                        )}
+                      </>
+                    ) : null}
+                  </span>
+                  {serviceDetailOpen === actionKey && isInference ? (
+                    <div className="device-service-detail-body">
+                      {model?.modelId ? (
+                        <div className="device-service-detail-row">
+                          <span>模型编码</span>
+                          <code title={String(model.modelId)}>{String(model.modelId)}</code>
+                        </div>
+                      ) : null}
+                      {model?.runtime ? (
+                        <div className="device-service-detail-row"><span>运行时</span><span>{String(model.runtime)}</span></div>
+                      ) : null}
+                      {!isSession && !isMultiModel && activeDeployment ? (
+                        <>
+                          <div className="device-service-detail-row">
+                            <span>平台部署</span>
+                            <span>{activeDeployment.modelName || "—"}{activeDeployment.modelVersion ? ` · ${activeDeployment.modelVersion}` : ""}</span>
+                          </div>
+                          {activeDeployment.activatedAt ? (
+                            <div className="device-service-detail-row">
+                              <span>激活时间</span>
+                              <span>{formatTime(activeDeployment.activatedAt)}</span>
+                            </div>
+                          ) : null}
+                          <button
+                            type="button"
+                            className="device-service-deploy"
+                            title={`平台部署 ${activeDeployment.deploymentCode} · 点击定位下方部署历史`}
+                            onClick={() => focusDeployment(String(activeDeployment.deploymentId))}
+                          >
+                            定位部署历史
+                          </button>
+                        </>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+            {serviceNotice ? (
+              <p className="device-detail-hint device-service-notice" role="status">{serviceNotice}</p>
+            ) : null}
           </div>
         ) : (
           <p className="device-detail-hint">暂无服务上报数据，等待下一次心跳。</p>
@@ -872,31 +1100,10 @@ function DeviceDetailView({ device }: { device: AutomlDevice }) {
       </article>
 
       <article className="panel device-section">
-        <h3 className="device-section-title">推理服务 <small>当前加载的模型与部署来源 · 点击跳转部署详情</small></h3>
-        {serviceInfo ? (
-          <button
-            type="button"
-            className="device-inference-card"
-            onClick={() => focusDeployment(String(activeDeployment!.deploymentId))}
-          >
-            <span className="device-inference-main">
-              <strong>{serviceInfo.modelCode ?? "—"} · {serviceInfo.modelVersion ?? "—"}</strong>
-              <small>
-                {serviceInfo.serviceName ?? "inference-service"} · 端口 {serviceInfo.port ?? "—"}
-                {" · "}运行时 {serviceInfo.runtime ?? "ONNX"}
-                {Array.isArray(serviceInfo.classes) && serviceInfo.classes.length
-                  ? ` · ${serviceInfo.classes.length} 类（${serviceInfo.classes.slice(0, 4).join("、")}${serviceInfo.classes.length > 4 ? "…" : ""}）`
-                  : ""}
-              </small>
-            </span>
-            <span className="device-inference-meta">
-              部署 {activeDeployment!.deploymentCode}
-              {" · "}激活于 {formatTime(activeDeployment!.activatedAt)}
-            </span>
-          </button>
-        ) : (
-          <p className="device-detail-hint">暂无激活部署：设备上的推理服务未加载平台部署的模型。</p>
-        )}
+        <h3 className="device-section-title">
+          部署历史
+          <small>该设备的全部部署任务（含失败与重试记录）</small>
+        </h3>
         {deployments.length ? (
           <div className="device-deployment-history" ref={historyRef}>
             <div className="device-deployment-history-title" aria-hidden="true">
@@ -912,7 +1119,11 @@ function DeviceDetailView({ device }: { device: AutomlDevice }) {
                   {isDeploymentInProgress(deployment.statusCd) ? <LoaderCircle size={11} className="spinner" /> : null}
                   {deploymentStatusLabel[deployment.statusCd] ?? deployment.statusCd}
                 </span>
-                <span className="device-cell">#{String(deployment.modelVersionId)}</span>
+                <span className="device-cell" title={`#${String(deployment.modelVersionId)}`}>
+                  {deployment.modelName
+                    ? `${deployment.modelName} · ${deployment.modelVersion ?? "v?"}`
+                    : `#${String(deployment.modelVersionId)}`}
+                </span>
                 <span className="device-cell">{formatTime(deployment.issuedAt)}</span>
                 <span className="device-cell">{formatTime(deployment.activatedAt)}</span>
               </div>

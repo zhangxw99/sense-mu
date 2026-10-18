@@ -2,7 +2,6 @@
 
 import type { LucideIcon } from "lucide-react";
 import {
-  Archive,
   Bell,
   Boxes,
   ChevronDown,
@@ -144,8 +143,40 @@ const emptyWorkbenchResources: WorkbenchResources = {
 
 type ResourceAction =
   | { kind: "dataset"; id: string; name: string }
-  | { kind: "project"; id: string; name: string }
   | { kind: "training-task"; id: string; name: string };
+
+// 名字里已手写版本号（如「… · V2」）时不再显示版本徽标，避免双重标识
+function nameHasVersion(name: string, publishedVersion: string | null): boolean {
+  const match = /^v(\d+)$/.exec(publishedVersion ?? "");
+  return !!match && new RegExp(`\\bV${match[1]}\\b`).test(name);
+}
+
+// 侧栏训练任务排序：进行中优先，但父任务（血缘祖先）始终排在子任务前，保证「重训」层级可读
+function sortSidebarTrainingTasks(tasks: AutomlTrainingTask[]): AutomlTrainingTask[] {  const parentById = new Map(
+    tasks.map((task) => [String(task.id), task.sourceTrainingTaskId != null ? String(task.sourceTrainingTaskId) : null]),
+  );
+  const isAncestor = (ancestorId: string, taskId: string): boolean => {
+    let current = parentById.get(taskId) ?? null;
+    const seen = new Set<string>([taskId]);
+    while (current && !seen.has(current)) {
+      if (current === ancestorId) return true;
+      seen.add(current);
+      current = parentById.get(current) ?? null;
+    }
+    return false;
+  };
+  const activeStatuses = new Set(["QUEUED", "SCHEDULED", "RUNNING"]);
+  return [...tasks].sort((left, right) => {
+    const leftId = String(left.id);
+    const rightId = String(right.id);
+    if (isAncestor(leftId, rightId)) return -1;
+    if (isAncestor(rightId, leftId)) return 1;
+    const leftActive = activeStatuses.has(left.statusCd) ? 0 : 1;
+    const rightActive = activeStatuses.has(right.statusCd) ? 0 : 1;
+    return leftActive - rightActive
+      || (Number(right.progress) || 0) - (Number(left.progress) || 0);
+  });
+}
 
 function defaultWorkbenchGroups(pathname: string): Record<WorkbenchGroupKey, boolean> {
   if (pathname.startsWith("/studio/data")) {
@@ -187,7 +218,6 @@ function Navigation({
   onToggleGroup,
   onDeleteDataset,
   onDeleteTrainingTask,
-  onArchiveProject,
 }: {
   active: ProductArea;
   collapsed: boolean;
@@ -213,7 +243,6 @@ function Navigation({
   onToggleGroup: (group: WorkbenchGroupKey) => void;
   onDeleteDataset: (dataset: AutomlDataset) => void;
   onDeleteTrainingTask: (task: AutomlTrainingTask) => void;
-  onArchiveProject: (project: Project) => void;
 }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -225,7 +254,7 @@ function Navigation({
   const addDatasetHref = "/studio/data?createDataset=1";
   const addTrainingHref = currentProject
     ? `/studio/training?project=${encodeURIComponent(currentProject.id)}&compose=1#new-training`
-    : "/studio/data?createProject=1";
+    : "/training-tasks?create=1";
   const roleLabels = {
     owner: "所有者",
     admin: "管理员",
@@ -379,31 +408,39 @@ function Navigation({
               group="train"
               label="训练"
               icon={FolderKanban}
-              count={trainingTasks.length || resources.projects.length}
+              count={trainingTasks.length}
               expanded={expandedGroups.train}
               onToggle={onToggleGroup}
               addHref={addTrainingHref}
-              addLabel={currentProject ? "新建训练" : "新建项目"}
+              addLabel={currentProject ? "新建训练" : "新建训练任务"}
               onMobileClose={onMobileClose}
             >
-              {/* 动态训练任务：进行中优先，点开直达详情；「训练任务」入口进完整列表 */}
-              {trainingTasks.length ? [...trainingTasks]
-                .sort((left, right) => {
-                  const activeStatuses = new Set(["QUEUED", "SCHEDULED", "RUNNING"]);
-                  const leftActive = activeStatuses.has(left.statusCd) ? 0 : 1;
-                  const rightActive = activeStatuses.has(right.statusCd) ? 0 : 1;
-                  return leftActive - rightActive
-                    || (Number(right.progress) || 0) - (Number(left.progress) || 0);
-                })
+              {/* 「训练任务」入口置顶：先给完整列表入口，再列进行中的任务 */}
+              <div className={`workbench-resource-row${active === "training-tasks" ? " is-current" : ""}`}>
+                <Link
+                  className="workbench-resource-link"
+                  href="/training-tasks"
+                  title="训练任务"
+                  onClick={onMobileClose}
+                >
+                  <span className="workbench-resource-mark is-project">训</span>
+                  <span>全部训练任务</span>
+                  <small>{trainingTasks.length || ""}</small>
+                </Link>
+              </div>
+              {/* 动态训练任务：父任务始终排在重训子任务前，父在可见列表时子任务缩进展示 */}
+              {trainingTasks.length ? sortSidebarTrainingTasks(trainingTasks)
                 .slice(0, 6)
-                .map((task) => {
+                .map((task, _index, visible) => {
+                  // 父任务不在可见列表（未入选/已删除）时不缩进，避免断头层级
+                  const nested = visible.some((candidate) => String(candidate.id) === String(task.sourceTrainingTaskId));
                   const selected = pathname === `/training-tasks/${task.id}`;
                   return (
-                    <div className={`workbench-resource-row${selected ? " is-current" : ""}`} key={`task-${task.id}`}>
+                    <div className={`workbench-resource-row${selected ? " is-current" : ""}${nested ? " is-nested" : ""}`} key={`task-${task.id}`}>
                       <Link
                         className="workbench-resource-link"
                         href={`/training-tasks/${task.id}`}
-                        title={`${task.name}（${task.statusCd}）`}
+                        title={nested ? `${task.name}（重训自 ${visible.find((candidate) => String(candidate.id) === String(task.sourceTrainingTaskId))?.name ?? "上级任务"}）` : `${task.name}（${task.statusCd}）`}
                         onClick={onMobileClose}
                       >
                         <span
@@ -411,7 +448,14 @@ function Navigation({
                           data-status={task.statusCd}
                           aria-hidden="true"
                         />
-                        <span>{task.name}</span>
+                        <span className="workbench-task-name">
+                          {task.publishedVersion && !nameHasVersion(task.name, task.publishedVersion) ? (
+                            <span className="workbench-task-version" title={`已发布版本 ${task.publishedVersion}`}>
+                              {task.publishedVersion}
+                            </span>
+                          ) : null}
+                          {task.name}
+                        </span>
                         <small>{Number(task.progress) || 0}%</small>
                       </Link>
                       {task.statusCd !== "RUNNING" && task.statusCd !== "SCHEDULED" ? (
@@ -428,45 +472,6 @@ function Navigation({
                     </div>
                   );
                 }) : null}
-              <div className={`workbench-resource-row${active === "training-tasks" ? " is-current" : ""}`}>
-                <Link
-                  className="workbench-resource-link"
-                  href="/training-tasks"
-                  title="训练任务"
-                  onClick={onMobileClose}
-                >
-                  <span className="workbench-resource-mark is-project">训</span>
-                  <span>全部训练任务</span>
-                  <small>{trainingTasks.length || ""}</small>
-                </Link>
-              </div>
-              {resourceLoadError && !resources.projects.length ? <span className="workbench-resource-empty">{resourceAlert.emptyLabel}</span> : resources.projects.length ? resources.projects.map((project) => {
-                const selected = (pathname === "/studio" || pathname.startsWith("/studio/training"))
-                  && selectedProjectId === project.id;
-                return (
-                  <div className={`workbench-resource-row${selected ? " is-current" : ""}`} key={project.id}>
-                    <Link
-                      className="workbench-resource-link"
-                      href={`/studio?project=${encodeURIComponent(project.id)}`}
-                      title={project.name}
-                      onClick={onMobileClose}
-                    >
-                      <span className="workbench-resource-mark is-project">{project.name.slice(0, 1).toUpperCase()}</span>
-                      <span>{project.name}</span>
-                      <small>{project.status === "paused" ? "暂停" : project.modelCount || ""}</small>
-                    </Link>
-                    <button
-                      className="workbench-resource-action"
-                      type="button"
-                      aria-label={`归档项目 ${project.name}`}
-                      title="归档项目"
-                      onClick={() => { onMobileClose(); onArchiveProject(project); }}
-                    >
-                      <Archive size={13} aria-hidden="true" />
-                    </button>
-                  </div>
-                );
-              }) : <span className="workbench-resource-empty">暂无训练项目</span>}
             </WorkbenchNavigationGroup>
 
             <WorkbenchNavigationGroup
@@ -687,7 +692,6 @@ export function ProductShell({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const router = useRouter();
-  const selectedProjectId = searchParams.get("project");
   const selectedDatasetId = searchParams.get("dataset");
   const [sidebarWidth, setSidebarWidth] = useState<number | null>(null);
   const [sidebarDragging, setSidebarDragging] = useState(false);
@@ -701,7 +705,8 @@ export function ProductShell({
   const [automlDatasets, setAutomlDatasets] = useState<AutomlDataset[]>([]);
   const [deploymentCount, setDeploymentCount] = useState<number | null>(null);
   const [trainingTasks, setTrainingTasks] = useState<AutomlTrainingTask[]>([]);
-  const [workbenchWorkspaceId, setWorkbenchWorkspaceId] = useState<string | null>(null);
+  // 工作区 ID 仍随身份刷新记录（原项目归档动作使用）；当前无读取方，保留 setter 同步
+  const [, setWorkbenchWorkspaceId] = useState<string | null>(null);
   const [resourceLoadError, setResourceLoadError] = useState<WorkbenchResourceLoadError | null>(null);
   const [expandedWorkbenchGroups, setExpandedWorkbenchGroups] = useState<Record<WorkbenchGroupKey, boolean>>(
     () => defaultWorkbenchGroups(pathname),
@@ -929,10 +934,6 @@ export function ProductShell({
   async function confirmResourceAction() {
     const action = pendingResourceAction;
     if (!action) return;
-    if (action.kind !== "dataset" && action.kind !== "training-task" && !workbenchWorkspaceId) {
-      setResourceActionError("未找到当前工作区，请刷新后重试");
-      return;
-    }
 
     setResourceActionBusy(true);
     setResourceActionError(null);
@@ -947,11 +948,6 @@ export function ProductShell({
         await deleteAutomlTrainingTask(action.id);
         if (pathname === `/training-tasks/${action.id}`) {
           router.replace("/training-tasks");
-        }
-      } else if (action.kind === "project") {
-        await catalogApi.archiveProject(workbenchWorkspaceId!, action.id);
-        if (selectedProjectId === action.id) {
-          router.replace("/");
         }
       }
       await refreshWorkbenchResources();
@@ -979,12 +975,6 @@ export function ProductShell({
       confirm: "删除训练任务",
       detail: "删除后任务的指标、事件与产物清单一并清除，且不可恢复；已发布为模型版本的任务不可删除。",
       Icon: Trash2,
-    },
-    project: {
-      title: "归档项目",
-      confirm: "归档项目",
-      detail: "归档后项目会从工作台列表移除。仍在运行的任务或在线服务需要先处理。",
-      Icon: Archive,
     },
   }[pendingResourceAction.kind] : null;
 
@@ -1126,11 +1116,6 @@ export function ProductShell({
           kind: "training-task",
           id: String(task.id),
           name: task.name || task.taskCode,
-        })}
-        onArchiveProject={(project) => requestResourceAction({
-          kind: "project",
-          id: project.id,
-          name: project.name,
         })}
       />
       <button

@@ -1,24 +1,45 @@
 "use client";
 
-import { AlertCircle, ArrowLeft, Cpu, LoaderCircle, Settings2, Zap } from "lucide-react";
+import { AlertCircle, ArrowLeft, Check, Copy, Cpu, LoaderCircle, Settings2, Zap } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   type AutomlDeviceDeployment,
+  type AutomlDeviceRuntimeState,
   deploymentStatusLabel,
   deviceStatusLabel,
   getAutomlDeviceDeployment,
+  listAutomlDevices,
 } from "../../../lib/automl-device-api";
 import {
   getAutomlFileUrls,
   listAutomlAlgorithmMarketListings,
 } from "../../../lib/automl-data-api";
 import { type EdgeCurrentModel, detectWithEdgeModel, getEdgeCurrentModel } from "../../../lib/edge-inference-api";
+import {
+  createEdgeInferenceSession,
+  detectWithSessionModel,
+} from "../../../lib/edge-session-api";
 import { type AlgorithmCatalogItem } from "../../../lib/catalog-mock-data";
 import { AlgorithmLiveDemo, type DemoRealInference } from "../../components/algorithm-live-demo";
 
 type ServiceTab = "inference" | "settings";
+
+// 常驻激活模型不一致时的降级推理：起临时会话加载本服务的模型再识别
+async function detectViaTemporarySession(
+  image: Blob,
+  threshold: number,
+  params: { deploymentId: string | null; modelCode: string; modelVersion: string },
+) {
+  await createEdgeInferenceSession({
+    deploymentId: params.deploymentId ?? undefined,
+    modelId: params.modelCode,
+    version: params.modelVersion,
+  });
+  const result = await detectWithSessionModel(image, threshold);
+  return result.detections;
+}
 
 // 体验样例图（真实公开样本，作为默认推理输入；用户可上传替换）
 const DEMO_SCENE = "traffic";
@@ -77,6 +98,8 @@ export function ServiceDetailWorkbench({ deploymentId }: { deploymentId: string 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [edgeModel, setEdgeModel] = useState<EdgeCurrentModel | null>(null);
+  const [deviceRuntime, setDeviceRuntime] = useState<AutomlDeviceRuntimeState | null>(null);
+  const [endpointCopied, setEndpointCopied] = useState(false);
   // 样例图 = 模型市场条目的封面（后端回退训练数据集样本），与被测模型同类才好体验
   const [sampleImageUrl, setSampleImageUrl] = useState<string | null>(null);
   const [sampleFromDataset, setSampleFromDataset] = useState(false);
@@ -103,6 +126,24 @@ export function ServiceDetailWorkbench({ deploymentId }: { deploymentId: string 
     void getEdgeCurrentModel().then(setEdgeModel).catch(() => setEdgeModel(null));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deploymentId]);
+
+  // 接口别名探活结果：来自设备心跳（edge 每 30s 探一次 /{别名}/detect）
+  useEffect(() => {
+    if (!deployment?.deviceId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const page = await listAutomlDevices({ page: 1, limit: 100 });
+        const device = page.rows.find((row) => String(row.deviceId) === String(deployment.deviceId));
+        if (!cancelled) setDeviceRuntime(device?.lastStateJson ?? null);
+      } catch {
+        if (!cancelled) setDeviceRuntime(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [deployment?.deviceId, deployment?.statusCd]);
 
   useEffect(() => {
     const modelCode = deployment?.serviceInfo?.modelCode;
@@ -141,18 +182,33 @@ export function ServiceDetailWorkbench({ deploymentId }: { deploymentId: string 
   const serviceInfo = deployment?.serviceInfo ?? null;
   const running = deployment?.statusCd === "ACTIVE" && Boolean(serviceInfo);
 
+  const inferenceAliasPath = deployment?.apiAlias ? `/${deployment.apiAlias}/detect` : null;
+  const activeDeploymentId = deployment?.deploymentId != null ? String(deployment.deploymentId) : null;
   const realInference = useMemo<DemoRealInference | null>(() => {
-    if (!running || !edgeModel || !serviceInfo) return null;
-    // 设备激活模型与本服务一致时才可真实识别（与算法市场在线体验同一约束）
-    if (serviceInfo.modelCode && edgeModel.modelId !== serviceInfo.modelCode) return null;
+    if (!running || !serviceInfo) return null;
+    const modelCode = serviceInfo.modelCode ?? deployment?.modelName ?? "";
+    const modelVersion = serviceInfo.modelVersion ?? "";
+    // 常驻激活模型与本服务一致：直接走常驻实例（与展示的接口地址一致，经别名寻址）
+    if (edgeModel && serviceInfo.modelCode && edgeModel.modelId === serviceInfo.modelCode) {
+      return {
+        modelName: `${serviceInfo.modelCode} · ${serviceInfo.modelVersion}`,
+        detect: async (image, threshold) => (await detectWithEdgeModel(image, threshold, inferenceAliasPath ?? undefined)).detections,
+      };
+    }
+    // 常驻激活是别的模型：起临时会话加载本服务的模型，保证每个已部署服务都可真实推理。
+    // edge 侧同模型复用、异模型替换，空闲 TTL 兜底回收，无需页面显式销毁。
     return {
-      modelName: `${serviceInfo.modelCode ?? deployment?.modelName ?? "model"} · ${serviceInfo.modelVersion ?? ""}`,
-      detect: async (image, threshold) => (await detectWithEdgeModel(image, threshold)).detections,
+      modelName: `临时会话 · ${modelCode} · ${modelVersion}`,
+      detect: async (image, threshold) => detectViaTemporarySession(image, threshold, {
+        deploymentId: activeDeploymentId,
+        modelCode: String(serviceInfo.modelCode),
+        modelVersion: String(serviceInfo.modelVersion ?? ""),
+      }),
     };
-  }, [running, edgeModel, serviceInfo, deployment?.modelName]);
+  }, [running, edgeModel, serviceInfo, deployment?.modelName, inferenceAliasPath, activeDeploymentId]);
 
   const runDisabledHint = running && !realInference
-    ? "当前推理服务的激活模型与该部署不一致（或推理服务尚未就绪），暂不可真实识别。"
+    ? "推理服务尚未就绪，暂不可真实识别。"
     : null;
 
   if (loading) {
@@ -185,6 +241,16 @@ export function ServiceDetailWorkbench({ deploymentId }: { deploymentId: string 
   const deviceLabel = deployment.deviceName || `设备 ${String(deployment.deviceId)}`;
   // 接口地址：按服务别名寻址（POST /{别名}/detect），与服务器 IP:端口解耦；未设别名回退通用接口 /v1/detect
   const detectPath = deployment.apiAlias ? `/${deployment.apiAlias}/detect` : "/v1/detect";
+  // 心跳探活：设备心跳里该别名的可用性（别名一致才采信；老版本 edge 未上报时视为未开启）
+  let aliasAvailability: "AVAILABLE" | "UNAVAILABLE" | "UNPROBED" | null = null;
+  if (deployment.apiAlias) {
+    const inference = deviceRuntime?.inference ?? null;
+    if (inference?.apiAlias === deployment.apiAlias && inference.aliasAvailable != null) {
+      aliasAvailability = inference.aliasAvailable ? "AVAILABLE" : "UNAVAILABLE";
+    } else {
+      aliasAvailability = "UNPROBED";
+    }
+  }
   const detectUrl = serviceInfo?.baseUrl
     ? `${String(serviceInfo.baseUrl).replace(/\/+$/, "")}${detectPath}`
     : detectPath;
@@ -283,11 +349,33 @@ export function ServiceDetailWorkbench({ deploymentId }: { deploymentId: string 
                 <div className="endpoint-input service-endpoint-static" title={detectUrl}>
                   <span>{serviceInfo.baseUrl ? `${String(serviceInfo.baseUrl).replace(/\/+$/, "")}/` : "/"}</span>
                   <input readOnly value={detectPath.replace(/^\//, "")} />
+                  <button
+                    type="button"
+                    className="service-endpoint-copy"
+                    aria-label="复制接口地址"
+                    title="复制接口地址"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(detectUrl).then(() => {
+                        setEndpointCopied(true);
+                        window.setTimeout(() => setEndpointCopied(false), 1600);
+                      }).catch(() => {
+                        setEndpointCopied(false);
+                      });
+                    }}
+                  >
+                    {endpointCopied ? <Check size={12} /> : <Copy size={12} />}
+                    {endpointCopied ? "已复制" : "复制"}
+                  </button>
                 </div>
                 <small className="service-endpoint-hint">
                   {deployment.apiAlias
                     ? `按服务别名 /${deployment.apiAlias} 寻址，与服务器 IP:端口解耦`
                     : "通用接口（未设置服务别名）"}
+                  {aliasAvailability ? (
+                    <span className="device-status-chip service-alias-availability" data-status={aliasAvailability}>
+                      {aliasAvailability === "AVAILABLE" ? "心跳探活可用" : aliasAvailability === "UNAVAILABLE" ? "心跳探活不可用" : "心跳探活未开启"}
+                    </span>
+                  ) : null}
                 </small>
               </label>
               <label><span>运行时</span><input readOnly value={serviceInfo.runtime ?? "—"} /></label>

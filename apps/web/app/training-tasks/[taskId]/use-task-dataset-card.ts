@@ -19,6 +19,36 @@ export type TaskDatasetCard = {
   coverBoxes: { labelName: string; x: number; y: number; w: number; h: number }[];
 };
 
+// 标注几何 → 封面演示框：bbox 直接用；polygon 取顶点包围盒（分割标注的封面退化为外接框）
+function annotationToCoverBox(
+  labelName: string,
+  json: Record<string, unknown>,
+): { labelName: string; x: number; y: number; w: number; h: number } | null {
+  if (String(json.type ?? "").toLowerCase() === "polygon") {
+    const rawPoints = Array.isArray(json.points) ? json.points : [];
+    const xs: number[] = [];
+    const ys: number[] = [];
+    for (const point of rawPoints) {
+      if (!Array.isArray(point) || point.length < 2
+        || typeof point[0] !== "number" || typeof point[1] !== "number") {
+        return null;
+      }
+      xs.push(point[0]);
+      ys.push(point[1]);
+    }
+    if (xs.length < 3) return null;
+    const minX = Math.min(...xs);
+    const minY = Math.min(...ys);
+    return { labelName, x: minX, y: minY, w: Math.max(...xs) - minX, h: Math.max(...ys) - minY };
+  }
+  if (typeof json.x !== "number" || typeof json.y !== "number"
+    || typeof json.w !== "number" || typeof json.h !== "number"
+    || ![json.x, json.y, json.w, json.h].every((value) => Number.isFinite(value))) {
+    return null;
+  }
+  return { labelName, x: json.x, y: json.y, w: json.w, h: json.h };
+}
+
 // 数据集摘要卡 + 演示封面（第一个有标注的样本）：任务详情页与测试验证页共用
 export function useTaskDatasetCard(
   task: { datasetId: AutomlId | null; datasetVersionId: AutomlId | null } | null,
@@ -49,15 +79,11 @@ export function useTaskDatasetCard(
           try {
             const annotations = await listAutomlAnnotations(datasetId, datasetVersionId, sample.id);
             const boxes = annotations
-              .filter((annotation) => {
-                const json = annotation.annotationJson as { type?: string; x?: unknown; y?: unknown; w?: unknown; h?: unknown } | null;
-                return json?.type === "bbox"
-                  && [json.x, json.y, json.w, json.h].every((value) => typeof value === "number" && Number.isFinite(value));
-              })
-              .map((annotation) => {
-                const json = annotation.annotationJson as { x: number; y: number; w: number; h: number };
-                return { labelName: annotation.labelName, x: json.x, y: json.y, w: json.w, h: json.h };
-              });
+              .map((annotation) => annotationToCoverBox(
+                annotation.labelName,
+                (annotation.annotationJson ?? {}) as Record<string, unknown>,
+              ))
+              .filter((box): box is { labelName: string; x: number; y: number; w: number; h: number } => box !== null);
             if (boxes.length) {
               firstSample = sample;
               coverBoxes.push(...boxes);

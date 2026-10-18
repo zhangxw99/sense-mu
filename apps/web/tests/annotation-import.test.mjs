@@ -47,9 +47,26 @@ function makeFile(name, content, type = "text/plain") {
 test("parseYoloTxt 解析归一化中心点并转左上角", () => {
   const boxes = lib.parseYoloTxt("0 0.5 0.5 0.2 0.4\n\n1 0.25 0.75 0.1 0.1");
   assert.equal(boxes.length, 2);
-  assert.deepEqual(boxes[0], { classIndex: 0, x: 0.4, y: 0.3, w: 0.2, h: 0.4 });
+  assert.deepEqual(boxes[0], { kind: "bbox", classIndex: 0, x: 0.4, y: 0.3, w: 0.2, h: 0.4 });
+  assert.equal(boxes[1].kind, "bbox");
   assert.equal(boxes[1].classIndex, 1);
   assert.ok(Math.abs(boxes[1].x - 0.2) < 1e-9);
+});
+
+test("parseYoloTxt 解析 YOLO-seg 多边形行", () => {
+  const shapes = lib.parseYoloTxt("2 0.1 0.1 0.5 0.1 0.5 0.6 0.1 0.6\n0 0.7 0.7 0.9 0.7 0.9 0.9");
+  assert.equal(shapes.length, 2);
+  assert.deepEqual(shapes[0], {
+    kind: "polygon",
+    classIndex: 2,
+    points: [[0.1, 0.1], [0.5, 0.1], [0.5, 0.6], [0.1, 0.6]],
+  });
+  assert.equal(shapes[1].kind, "polygon");
+  assert.equal(shapes[1].points.length, 3);
+});
+
+test("parseYoloTxt 多边形坐标数为奇数时抛出错误", () => {
+  assert.throws(() => lib.parseYoloTxt("0 0.1 0.1 0.2 0.2 0.3"), /坐标数非法/);
 });
 
 test("parseYoloTxt 对非法行抛出可读错误", () => {

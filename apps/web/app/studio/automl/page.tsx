@@ -1,18 +1,6 @@
-import type { Metadata } from "next";
-import { ProductShell } from "../../components/product-shell";
-import { AutomlWorkbench } from "./automl-workbench";
+import { redirect } from "next/navigation";
 
-export const metadata: Metadata = {
-  title: "AutoML 数据联调 · SenseMu",
-  description: "对接 sz-boot AutoML 数据与标注接口的联调工作台。",
-};
-
-export default function AutomlDataPage() {
-  return (
-    <ProductShell active="studio">
-      <main className="studio-main data-page">
-        <AutomlWorkbench />
-      </main>
-    </ProductShell>
-  );
+// 联调台已迁至 /test/automl；旧路径（浏览器历史/编辑器返回链接）统一重定向，避免回退落在正式应用里
+export default function AutomlLegacyPage() {
+  redirect("/test/automl");
 }

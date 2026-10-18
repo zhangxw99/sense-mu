@@ -22,19 +22,22 @@ async function render(pathname = "/") {
   );
 }
 
-test("server-renders a consistent hosted demo overview", async () => {
+test("server-renders the real-data workbench shell in hosted preview", async () => {
   const response = await render();
   assert.equal(response.status, 200);
 
   const html = await response.text();
   assert.match(html, /<html[^>]*data-sensemu-preview="true"/);
   assert.match(html, /<h1>工作台<\/h1>/);
-  assert.match(html, /工地安全穿戴数据/);
-  assert.match(html, /12 个素材/);
-  assert.match(html, /金属表面缺陷数据/);
-  assert.match(html, /8 个素材/);
-  assert.match(html, /3 个版本/);
-  assert.doesNotMatch(html, /1,248 个素材|594 个素材/);
+  // 工作台数据全部来自浏览器端 /sz-api/automl 接口，SSR 只渲染加载骨架
+  assert.match(html, /正在读取数据集/);
+  assert.match(html, /正在读取训练任务/);
+  assert.match(html, /正在读取最近活动/);
+  assert.match(html, /aria-label="新建数据集"/);
+  assert.match(html, /aria-label="新建训练"/);
+  assert.match(html, /aria-label="概览"/);
+  assert.match(html, /查看全部/);
+  assert.match(html, /还没有活动记录|正在读取最近活动/);
 });
 
 test("hosted preview keeps the algorithm catalog and demo detail available", async () => {

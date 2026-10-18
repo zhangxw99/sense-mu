@@ -34,6 +34,8 @@ export const automlTaskType = (taskType: string): string => {
   const labels: Record<string, string> = {
     OBJECT_DETECTION: "object-detection",
     IMAGE_CLASSIFICATION: "classification",
+    CLASSIFICATION: "classification",
+    INSTANCE_SEGMENTATION: "segmentation",
     SEGMENTATION: "segmentation",
     POSE_ESTIMATION: "pose",
     OCR: "ocr",

@@ -618,6 +618,32 @@ export async function appendAutomlDatasetFiles(
   );
 }
 
+export type AutomlAsyncTask = {
+  id: AutomlId;
+  taskType?: string | null;
+  statusCd: string;
+  progress?: number | null;
+  progressMessage?: string | null;
+  errorMessage?: string | null;
+  resultJson?: Record<string, unknown> | null;
+};
+
+// ZIP 导入异步任务：后端解压（zip-slip 防护）→ 预建类别 → 图片按类别重命名入库（幂等）
+export async function createAutomlDatasetZipImportTask(
+  datasetId: number | string,
+  dataFileId: AutomlId,
+  format: "AUTO" | "YOLO" | "CSV" = "AUTO",
+): Promise<AutomlAsyncTask> {
+  return fetchAutoml<AutomlAsyncTask>(
+    `/datasets/${encodeURIComponent(String(datasetId))}/import-tasks`,
+    jsonInit("POST", { dataFileId, format }),
+  );
+}
+
+export async function getAutomlTask(taskId: AutomlId): Promise<AutomlAsyncTask> {
+  return fetchAutoml<AutomlAsyncTask>(`/tasks/${encodeURIComponent(String(taskId))}`);
+}
+
 export async function listAutomlDatasetMaterials(datasetId: number | string): Promise<AutomlMaterial[]> {
   return fetchAutoml<AutomlMaterial[]>(`/datasets/${encodeURIComponent(String(datasetId))}/materials`);
 }
@@ -674,6 +700,56 @@ export async function deleteAutomlDatasetClass(datasetId: number | string, class
 
 export async function getAutomlDatasetVersionDetails(datasetId: number | string): Promise<AutomlVersionDetail> {
   return fetchAutoml<AutomlVersionDetail>(`/datasets/${encodeURIComponent(String(datasetId))}/version-details`);
+}
+
+// 数据集版本数据质量分析（EDA）。后端 Long 全量序列化为字符串，计数按 number 声明、渲染处用 Number() 归一。
+export type AutomlVersionQuality = {
+  sampleCount: number;
+  imageCount: number;
+  corruptedCount: number;
+  annotatedSampleCount: number;
+  emptySampleCount: number;
+  emptySampleRatio: number | null;
+  boxCount: number;
+  polygonCount: number;
+  avgTargetsPerSample: number | null;
+  maxTargetsPerSample: number | null;
+  classStats: {
+    classId: AutomlId | null;
+    classCode: string | null;
+    className: string;
+    classIndex: number | null;
+    targetCount: number;
+    sampleCount: number;
+    sharePercent: number | null;
+  }[];
+  imbalanceRatio: number | null;
+  splitStats: {
+    splitType: string;
+    sampleCount: number;
+    targetCount: number;
+    missingClassNames: string[];
+  }[];
+  anomalies: {
+    outOfBoundsCount: number;
+    invalidGeometryCount: number;
+    tinyBoxCount: number;
+    tinyBoxShare: number | null;
+  };
+  resolutionStats: {
+    width: number;
+    height: number;
+    count: number;
+  }[];
+};
+
+export async function getAutomlDatasetVersionQuality(
+  datasetId: number | string,
+  datasetVersionId: AutomlId,
+): Promise<AutomlVersionQuality> {
+  return fetchAutoml<AutomlVersionQuality>(
+    `/datasets/${encodeURIComponent(String(datasetId))}/versions/${encodeURIComponent(String(datasetVersionId))}/quality`,
+  );
 }
 
 export type AutomlMarketListing = {
@@ -784,6 +860,8 @@ export type AutomlAlgorithmMarketListing = {
   modelId: AutomlId;
   modelCode: string;
   name: string;
+  // 服务别名：接口地址路径段 POST /{apiAlias}/detect（部署后端侧生效）；空=未设置
+  apiAlias?: string | null;
   taskType: string;
   framework: string | null;
   scene: string | null;

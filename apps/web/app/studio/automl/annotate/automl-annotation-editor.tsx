@@ -5,16 +5,22 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  Eye,
+  EyeOff,
   ListChecks,
   LoaderCircle,
+  Maximize,
   MousePointer2,
   RefreshCw,
   Save,
+  Shapes,
   Square,
   Trash2,
   Undo2,
   Redo2,
   WandSparkles,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -32,22 +38,26 @@ import {
   saveAutomlAnnotations,
 } from "../../../../lib/automl-data-api";
 import { containFramePercentages, type ContainFrame } from "../../../../lib/annotation-geometry";
-import { samDetectionsToBoxDrafts } from "../../../../lib/sam-annotation";
+import { samDetectionsToBoxDrafts, samDetectionsToPolygonDrafts } from "../../../../lib/sam-annotation";
 import { fetchImageAsDataUrl, predictSamDetections } from "../../../../lib/sam-api";
 import { DynamicAssetImage } from "../../../components/dynamic-asset-image";
 
-type Tool = "select" | "box";
+type Tool = "select" | "box" | "polygon";
+
+// 画布缩放档位：1 = 适应窗口，放大后画布容器滚动查看（画多边形需要放大对位）
+const ZOOM_STEPS = [1, 1.5, 2, 3, 4];
+
+// 标注几何：矩形框或多边形，坐标均为图片百分比 0-100；保存时归一化为 0-1
+type EditorShape =
+  | { kind: "bbox"; x: number; y: number; width: number; height: number }
+  | { kind: "polygon"; points: { x: number; y: number }[] };
 
 type EditorBox = {
   id: string;
   label: string;
   colorIndex: number;
-  // 左上角坐标与宽高，单位为图片百分比 0-100；保存时归一化为 0-1。
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  // MODEL_ASSISTED 为 AI 识别生成的框（画布上以紫色虚线区分），保存时随标注逐条上报。
+  shape: EditorShape;
+  // MODEL_ASSISTED 为 AI 识别生成的标注（画布上以紫色虚线区分），保存时随标注逐条上报。
   // IMPORT 为文件导入的标注（无任务归属），保存后并入当前任务并保留溯源。
   sourceCd?: "MANUAL" | "MODEL_ASSISTED" | "IMPORT";
   confidence?: number | null;
@@ -57,27 +67,73 @@ const PAGE_SIZE = 20;
 const MAX_ITEM_LOOKUP_PAGES = 5;
 const URL_TTL_SECONDS = 3600;
 
-function bboxToBox(annotation: AutomlAnnotation, classIndexByName: Map<string, number>): EditorBox | null {
+// URL 由数据与标注页带上数据集任务类型；分割任务默认多边形工具且 AI 出多边形
+function readSegmentationFlag(value: string | null): boolean {
+  const normalized = (value ?? "").toUpperCase();
+  return normalized === "INSTANCE_SEGMENTATION" || normalized === "SEGMENTATION";
+}
+
+function annotationToBox(annotation: AutomlAnnotation, classIndexByName: Map<string, number>): EditorBox | null {
   const geometry = annotation.annotationJson ?? {};
-  if (typeof geometry.x !== "number" || typeof geometry.y !== "number"
-    || typeof geometry.w !== "number" || typeof geometry.h !== "number") {
-    return null;
-  }
   const label = annotation.labelName;
-  return {
+  const common = {
     id: `server-${annotation.id}`,
     label,
     colorIndex: classIndexByName.get(label) ?? Math.abs(hashLabel(label)) % 3,
-    x: geometry.x * 100,
-    y: geometry.y * 100,
-    width: geometry.w * 100,
-    height: geometry.h * 100,
-    // 后端把 MODEL_ASSISTED 归一化存储为 MODEL，回读时还原成 AI 框样式；IMPORT（导入标注）保真透传。
+    // 后端把 MODEL_ASSISTED 归一化存储为 MODEL，回读时还原成 AI 标注样式；IMPORT（导入标注）保真透传。
     sourceCd: annotation.sourceCd === "MODEL" || annotation.sourceCd === "MODEL_ASSISTED"
       ? "MODEL_ASSISTED"
       : annotation.sourceCd === "IMPORT" ? "IMPORT" : "MANUAL",
     confidence: annotation.confidence,
+  } as const;
+  if (String(geometry.type ?? "").toLowerCase() === "polygon") {
+    const rawPoints = Array.isArray(geometry.points) ? geometry.points : [];
+    const points: { x: number; y: number }[] = [];
+    for (const point of rawPoints) {
+      if (!Array.isArray(point) || point.length < 2
+        || typeof point[0] !== "number" || typeof point[1] !== "number") {
+        return null;
+      }
+      points.push({ x: point[0] * 100, y: point[1] * 100 });
+    }
+    if (points.length < 3) return null;
+    return { ...common, shape: { kind: "polygon", points } };
+  }
+  if (typeof geometry.x !== "number" || typeof geometry.y !== "number"
+    || typeof geometry.w !== "number" || typeof geometry.h !== "number") {
+    return null;
+  }
+  return {
+    ...common,
+    shape: { kind: "bbox", x: geometry.x * 100, y: geometry.y * 100, width: geometry.w * 100, height: geometry.h * 100 },
   };
+}
+
+function round6(value: number): number {
+  return Math.round(value * 1_000_000) / 1_000_000;
+}
+
+function shapeToAnnotationJson(shape: EditorShape): Record<string, unknown> {
+  if (shape.kind === "polygon") {
+    return {
+      type: "polygon",
+      points: shape.points.map((point) => [round6(point.x / 100), round6(point.y / 100)]),
+    };
+  }
+  return {
+    type: "bbox",
+    x: round6(shape.x / 100),
+    y: round6(shape.y / 100),
+    w: round6(shape.width / 100),
+    h: round6(shape.height / 100),
+  };
+}
+
+// 多边形顶点的包围盒（百分比），用于放置标签角标
+function polygonBounds(points: readonly { x: number; y: number }[]): { x: number; y: number } {
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
+  return { x: Math.min(...xs), y: Math.min(...ys) };
 }
 
 function hashLabel(label: string): number {
@@ -102,6 +158,7 @@ export function AutomlAnnotationEditor() {
   const requestedVersionId = searchParams.get("version") ?? "";
   const requestedTaskId = searchParams.get("task") ?? "";
   const requestedItemId = searchParams.get("item");
+  const isSegmentationDataset = readSegmentationFlag(searchParams.get("type"));
 
   const datasetId = requestedDatasetId;
   const versionId = requestedVersionId;
@@ -120,7 +177,7 @@ export function AutomlAnnotationEditor() {
   const [itemsLoading, setItemsLoading] = useState(false);
 
   const [boxes, setBoxes] = useState<EditorBox[]>([]);
-  const [activeTool, setActiveTool] = useState<Tool>("select");
+  const [activeTool, setActiveTool] = useState<Tool>(isSegmentationDataset ? "polygon" : "select");
   const [selectedLabelIndex, setSelectedLabelIndex] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
@@ -130,11 +187,17 @@ export function AutomlAnnotationEditor() {
   const [history, setHistory] = useState<EditorBox[][]>([]);
   const [future, setFuture] = useState<EditorBox[][]>([]);
   const [draftBox, setDraftBox] = useState<EditorBox | null>(null);
+  // 多边形工具的进行中顶点序列（图片百分比坐标）
+  const [draftPolygon, setDraftPolygon] = useState<{ points: { x: number; y: number }[] } | null>(null);
   const [aiBusy, setAiBusy] = useState(false);
   // object-fit: contain 下图片实际显示区域（画布百分比），框层挂在其上以随画布缩放对齐。
   const [imageFrame, setImageFrame] = useState<ContainFrame | null>(null);
+  // 画布缩放（画多边形需要放大对位）与类别可见性（小眼睛只影响画布/列表的查看）
+  const [zoomIndex, setZoomIndex] = useState(0);
+  const [hiddenClasses, setHiddenClasses] = useState<Set<number>>(new Set());
 
   const canvasRef = useRef<HTMLDivElement>(null);
+  const scalerRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
   const boxesRef = useRef<EditorBox[]>([]);
   const historyRef = useRef<EditorBox[][]>([]);
@@ -161,6 +224,20 @@ export function AutomlAnnotationEditor() {
     () => labelNames.map((label) => boxes.filter((box) => box.label === label).length),
     [boxes, labelNames],
   );
+  // 小眼睛过滤：隐藏类别的标注不出现在画布与「本张标注」列表（不影响保存内容）
+  const visibleBoxes = useMemo(
+    () => boxes.map((box, index) => ({ box, index })).filter(({ box }) => !hiddenClasses.has(box.colorIndex)),
+    [boxes, hiddenClasses],
+  );
+  const hiddenCount = boxes.length - visibleBoxes.length;
+  function toggleClassVisibility(index: number) {
+    setHiddenClasses((current) => {
+      const next = new Set(current);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
+  }
   const contextReady = Boolean(datasetId.trim() && versionId.trim());
 
   // 操作反馈统一走 notify：默认灰色 info，保存/AI 等关键成功用绿色 success。
@@ -177,6 +254,7 @@ export function AutomlAnnotationEditor() {
     setHistory([]);
     setFuture([]);
     setDraftBox(null);
+    setDraftPolygon(null);
     setSelectedId(null);
     setImageFrame(null);
   }
@@ -385,12 +463,12 @@ export function AutomlAnnotationEditor() {
         );
         if (cancelled) return;
         const nextBoxes = annotations
-          .map((annotation) => bboxToBox(annotation, classIndexByName))
+          .map((annotation) => annotationToBox(annotation, classIndexByName))
           .filter((box): box is EditorBox => box !== null);
         const skipped = annotations.length - nextBoxes.length;
         boxesRef.current = nextBoxes;
         setBoxes(nextBoxes);
-        notify(skipped > 0 ? `已读取 ${nextBoxes.length} 条矩形框标注（${skipped} 条非矩形格式已忽略）` : `已读取 ${nextBoxes.length} 条标注`);
+        notify(skipped > 0 ? `已读取 ${nextBoxes.length} 条标注（${skipped} 条不支持的几何已忽略）` : `已读取 ${nextBoxes.length} 条标注`);
       } catch (reason) {
         if (!cancelled) notify(reason instanceof Error ? reason.message : "标注读取失败");
       }
@@ -416,10 +494,11 @@ export function AutomlAnnotationEditor() {
   }, [thumbs, item, thumbFailed]);
 
   function getImageFrame() {
-    const canvas = canvasRef.current;
+    // 缩放时以缩放层为测量目标：它的 bounds 已包含放大倍率，百分比坐标体系不变
+    const surface = scalerRef.current ?? canvasRef.current;
     const image = imageRef.current;
-    if (!canvas || !image?.naturalWidth || !image.naturalHeight) return null;
-    const bounds = canvas.getBoundingClientRect();
+    if (!surface || !image?.naturalWidth || !image.naturalHeight) return null;
+    const bounds = surface.getBoundingClientRect();
     const imageRatio = image.naturalWidth / image.naturalHeight;
     const canvasRatio = bounds.width / bounds.height;
     const width = imageRatio >= canvasRatio ? bounds.width : bounds.height * imageRatio;
@@ -443,25 +522,31 @@ export function AutomlAnnotationEditor() {
 
   // 重算图片实际显示区域（画布百分比）：图片加载完成与画布尺寸变化时调用。
   function updateImageFrame() {
-    const canvas = canvasRef.current;
+    const surface = scalerRef.current ?? canvasRef.current;
     const image = imageRef.current;
-    if (!canvas || !image?.naturalWidth || !image.naturalHeight) {
+    if (!surface || !image?.naturalWidth || !image.naturalHeight) {
       setImageFrame(null);
       return;
     }
-    const bounds = canvas.getBoundingClientRect();
+    const bounds = surface.getBoundingClientRect();
     setImageFrame(containFramePercentages(bounds.width, bounds.height, image.naturalWidth, image.naturalHeight));
   }
 
   // 画布随窗口/布局缩放时同步框层位置，保证标注框始终贴合图片。
   useEffect(() => {
+    const surface = scalerRef.current;
     const canvas = canvasRef.current;
-    if (!canvas || typeof ResizeObserver === "undefined") return;
+    if (typeof ResizeObserver === "undefined" || (!surface && !canvas)) return;
     const observer = new ResizeObserver(() => updateImageFrame());
-    observer.observe(canvas);
+    if (surface) observer.observe(surface);
+    if (canvas) observer.observe(canvas);
     return () => observer.disconnect();
-    // 画布尺寸由 flex/grid 决定，ResizeObserver 只在尺寸变化时触发回调。
   }, []);
+
+  // 缩放档位变化后重算图片显示区域（缩放层尺寸随 zoom 变化）
+  useEffect(() => {
+    updateImageFrame();
+  }, [zoomIndex]);
 
   function applyBoxes(nextBoxes: EditorBox[], message: string) {
     historyRef.current = [...historyRef.current, boxesRef.current];
@@ -520,10 +605,7 @@ export function AutomlAnnotationEditor() {
       id: "draft",
       label: labelNames[selectedLabelIndex],
       colorIndex: selectedLabelIndex,
-      x: point.x,
-      y: point.y,
-      width: 0,
-      height: 0,
+      shape: { kind: "bbox", x: point.x, y: point.y, width: 0, height: 0 },
     });
     event.currentTarget.setPointerCapture(event.pointerId);
   }
@@ -533,12 +615,15 @@ export function AutomlAnnotationEditor() {
     if (!drag) return;
     const point = getImagePoint(event.clientX, event.clientY);
     if (!point) return;
-    setDraftBox((current) => current ? {
+    setDraftBox((current) => current && current.shape.kind === "bbox" ? {
       ...current,
-      x: Math.min(drag.startX, point.x),
-      y: Math.min(drag.startY, point.y),
-      width: Math.abs(point.x - drag.startX),
-      height: Math.abs(point.y - drag.startY),
+      shape: {
+        kind: "bbox",
+        x: Math.min(drag.startX, point.x),
+        y: Math.min(drag.startY, point.y),
+        width: Math.abs(point.x - drag.startX),
+        height: Math.abs(point.y - drag.startY),
+      },
     } : null);
   }
 
@@ -560,7 +645,12 @@ export function AutomlAnnotationEditor() {
     }
     const id = createBoxId("box");
     applyBoxes(
-      [...boxesRef.current, { id, label: labelNames[selectedLabelIndex], colorIndex: selectedLabelIndex, ...draft }],
+      [...boxesRef.current, {
+        id,
+        label: labelNames[selectedLabelIndex],
+        colorIndex: selectedLabelIndex,
+        shape: { kind: "bbox", ...draft },
+      }],
       "已添加矩形框，保存后写入数据集",
     );
     setSelectedId(id);
@@ -573,6 +663,57 @@ export function AutomlAnnotationEditor() {
     }
   }
 
+  // 多边形工具：单击加点；靠近首点（≤2% 画布）或按 Enter 闭合，Esc 取消
+  function handlePolygonCanvasClick(event: React.MouseEvent<HTMLDivElement>) {
+    if (activeTool !== "polygon") return;
+    const point = getImagePoint(event.clientX, event.clientY);
+    if (!point) {
+      notify("图片尚未加载完成");
+      return;
+    }
+    if (!labelNames.length) {
+      notify("数据集还没有类别，请先在联调台「类别」页签维护");
+      return;
+    }
+    const current = draftPolygon?.points ?? [];
+    if (current.length >= 3) {
+      const first = current[0];
+      if (Math.hypot(first.x - point.x, first.y - point.y) <= 2) {
+        completePolygon();
+        return;
+      }
+    }
+    setDraftPolygon({ points: [...current, point] });
+  }
+
+  function completePolygon(cancelled = false) {
+    const draft = draftPolygon;
+    setDraftPolygon(null);
+    if (cancelled || !draft) return;
+    if (draft.points.length < 3) {
+      notify("多边形至少需要 3 个顶点，已取消本次绘制");
+      return;
+    }
+    const id = createBoxId("poly");
+    applyBoxes(
+      [...boxesRef.current, {
+        id,
+        label: labelNames[selectedLabelIndex],
+        colorIndex: selectedLabelIndex,
+        shape: { kind: "polygon", points: draft.points },
+      }],
+      "已添加多边形，保存后写入数据集",
+    );
+    setSelectedId(id);
+    setActiveTool("select");
+  }
+
+  function switchTool(next: Tool) {
+    setActiveTool(next);
+    setDraftPolygon(null);
+    if (next !== "select") setSelectedId(null);
+  }
+
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null;
@@ -580,6 +721,12 @@ export function AutomlAnnotationEditor() {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
         event.preventDefault();
         if (event.shiftKey) redo(); else undo();
+        return;
+      }
+      // 多边形工具：Enter 闭合、Esc 取消当前绘制
+      if (activeTool === "polygon" && (event.key === "Enter" || event.key === "Escape")) {
+        event.preventDefault();
+        completePolygon(event.key === "Escape");
         return;
       }
       // Delete/Backspace 删除当前选中的标注框，与「删除选中标注」按钮等效。
@@ -621,19 +768,13 @@ export function AutomlAnnotationEditor() {
         annotationTaskId: taskId.trim(),
       annotations: boxesRef.current.map((box) => ({
         labelName: box.label,
-        annotationJson: {
-          type: "bbox",
-          x: box.x / 100,
-          y: box.y / 100,
-          w: box.width / 100,
-          h: box.height / 100,
-        },
+        annotationJson: shapeToAnnotationJson(box.shape),
         ...(box.confidence != null ? { confidence: box.confidence } : {}),
         sourceCd: box.sourceCd ?? ("MANUAL" as const),
       })),
       });
       const nextBoxes = saved
-        .map((annotation) => bboxToBox(annotation, classIndexByName))
+        .map((annotation) => annotationToBox(annotation, classIndexByName))
         .filter((box): box is EditorBox => box !== null);
       boxesRef.current = nextBoxes;
       setBoxes(nextBoxes);
@@ -654,8 +795,9 @@ export function AutomlAnnotationEditor() {
     setSelectedId(null);
   }
 
-  // AI 标注：把当前样本图交给 SAM 分割服务识别数据集类别目标，
-  // 返回后叠加到画布（紫色虚线框）并复用保存链路自动落库。
+  // AI 标注：把当前样本图交给 SAM 分割服务识别数据集类别目标。
+  // 检测数据集产出矩形框；分割数据集（polygon=true）产出分割多边形，
+  // 返回后叠加到画布并复用保存链路自动落库。
   async function runAiAnnotate() {
     if (!item || aiBusy || saving) return;
     if (!imageUrl) {
@@ -676,20 +818,47 @@ export function AutomlAnnotationEditor() {
         imageDataUrl = await fetchImageAsDataUrl(imageUrl);
         imageDataCacheRef.current.set(objectKey, imageDataUrl);
       }
-      const result = await predictSamDetections({ imageDataUrl, classes: labelNames });
+      const result = await predictSamDetections({
+        imageDataUrl,
+        classes: labelNames,
+        polygon: isSegmentationDataset,
+      });
       if (currentItemIdRef.current !== runItemId) return; // 等待期间已切换样本，丢弃过期结果
-      const { drafts, skipped } = samDetectionsToBoxDrafts(result.detections, result.imageSize, labelNames);
-      if (!drafts.length) {
+      const aiBoxes: EditorBox[] = [];
+      let skipped = 0;
+      if (isSegmentationDataset) {
+        const converted = samDetectionsToPolygonDrafts(result.detections, result.imageSize, labelNames);
+        skipped = converted.skipped;
+        for (const draft of converted.drafts) {
+          aiBoxes.push({
+            id: createBoxId("ai"),
+            label: draft.label,
+            colorIndex: draft.colorIndex,
+            shape: { kind: "polygon", points: draft.points },
+            sourceCd: "MODEL_ASSISTED",
+            confidence: draft.confidence,
+          });
+        }
+      } else {
+        const converted = samDetectionsToBoxDrafts(result.detections, result.imageSize, labelNames);
+        skipped = converted.skipped;
+        for (const draft of converted.drafts) {
+          aiBoxes.push({
+            id: createBoxId("ai"),
+            label: draft.label,
+            colorIndex: draft.colorIndex,
+            shape: { kind: "bbox", x: draft.x, y: draft.y, width: draft.width, height: draft.height },
+            sourceCd: "MODEL_ASSISTED",
+            confidence: draft.confidence,
+          });
+        }
+      }
+      if (!aiBoxes.length) {
         notify(skipped
           ? `AI 未识别出可标注目标（${skipped} 条结果与数据集类别不匹配，已忽略）`
           : "AI 未识别出目标，可调整数据集类别词后重试");
         return;
       }
-      const aiBoxes: EditorBox[] = drafts.map((draft) => ({
-        id: createBoxId("ai"),
-        ...draft,
-        sourceCd: "MODEL_ASSISTED" as const,
-      }));
       const recognizedLabels = [...new Set(aiBoxes.map((box) => box.label))].join("、");
       applyBoxes(
         [...boxesRef.current, ...aiBoxes],
@@ -714,22 +883,22 @@ export function AutomlAnnotationEditor() {
     await loadItems(nextPage);
   }
 
-  // 返回目标按来源区分：数据与标注页（from=data）回数据集详情，其余回联调台。
+  // 返回目标按来源区分：数据与标注页（from=data）回数据集详情，其余回联调测试台（/test/automl）。
   const returnToDataPage = searchParams.get("from") === "data";
   const backHref = !datasetId
-    ? "/studio/automl"
+    ? "/test/automl"
     : returnToDataPage
       ? `/studio/data?dataset=${encodeURIComponent(datasetId)}&version=${encodeURIComponent(versionId)}`
-      : `/studio/automl?dataset=${encodeURIComponent(datasetId)}&version=${encodeURIComponent(versionId)}`;
-  const backLabel = returnToDataPage ? "返回数据集" : "返回联调台";
+      : `/test/automl`;
+  const backLabel = returnToDataPage ? "返回数据集" : "返回联调测试台";
 
   if (!requestedDatasetId || !requestedVersionId) {
     return (
       <main className="annotation-editor-page">
         <div className="annotation-editor-empty">
           <ListChecks size={20} />
-          <p>请从 AutoML 联调台的样本列表进入标注。</p>
-          <Link className="secondary-button" href="/studio/automl">返回联调台</Link>
+          <p>请从 AutoML 联调测试台的样本列表进入标注。</p>
+          <Link className="secondary-button" href="/test/automl">返回联调测试台</Link>
         </div>
       </main>
     );
@@ -778,14 +947,20 @@ export function AutomlAnnotationEditor() {
       </header>
       <div className="annotation-editor-workspace">
         <aside className="annotation-tool-rail" aria-label="标注工具">
-          <button type="button" className={activeTool === "select" ? "is-active" : ""} aria-label="选择" title="选择" onClick={() => setActiveTool("select")}><MousePointer2 size={18} /><span>选择</span></button>
-          <button type="button" className={activeTool === "box" ? "is-active" : ""} aria-label="矩形框" title="矩形框" onClick={() => setActiveTool("box")}><Square size={18} /><span>矩形框</span></button>
+          <button type="button" className={activeTool === "select" ? "is-active" : ""} aria-label="选择" title="选择" onClick={() => switchTool("select")}><MousePointer2 size={18} /><span>选择</span></button>
+          {isSegmentationDataset ? (
+            <button type="button" className={activeTool === "polygon" ? "is-active" : ""} aria-label="多边形" title="多边形" onClick={() => switchTool("polygon")}><Shapes size={18} /><span>多边形</span></button>
+          ) : (
+            <button type="button" className={activeTool === "box" ? "is-active" : ""} aria-label="矩形框" title="矩形框" onClick={() => switchTool("box")}><Square size={18} /><span>矩形框</span></button>
+          )}
           <div className="tool-rail-divider" aria-hidden="true" />
           <button
             type="button"
             className="ai-annotate-button"
             aria-label="AI 标注"
-            title="AI 自动识别数据集类别并生成矩形框（SAM）"
+            title={isSegmentationDataset
+              ? "AI 自动识别数据集类别并生成分割多边形（SAM）"
+              : "AI 自动识别数据集类别并生成矩形框（SAM）"}
             disabled={aiBusy || saving || !item || !imageUrl}
             onClick={() => void runAiAnnotate()}
           >
@@ -795,12 +970,16 @@ export function AutomlAnnotationEditor() {
         </aside>
         <section className="annotation-canvas-column">
           <div className={`annotation-canvas tool-${activeTool}`} ref={canvasRef} aria-label="标注画布">
+            <div
+              className="annotation-canvas-scaler"
+              ref={scalerRef}
+              style={{ width: `${ZOOM_STEPS[zoomIndex] * 100}%`, height: `${ZOOM_STEPS[zoomIndex] * 100}%` }}
+            >
             {imageUrl ? (
               <DynamicAssetImage ref={imageRef} className="annotation-source-image" src={imageUrl} alt="当前样本" onLoad={() => updateImageFrame()} />
             ) : (
               <LoaderCircle className="spinner" size={24} />
             )}
-            {imageLoading ? <span className="canvas-help">正在获取样本图片…</span> : null}
             {activeTool === "box" ? (
               <div
                 className="canvas-drag-layer"
@@ -814,39 +993,130 @@ export function AutomlAnnotationEditor() {
                 onMouseUp={(event) => completeBox(event.clientX, event.clientY)}
               />
             ) : null}
+            {activeTool === "polygon" ? (
+              <div
+                className="canvas-drag-layer"
+                role="presentation"
+                aria-label={`绘制「${labelNames[selectedLabelIndex] ?? "类别"}」多边形`}
+                onClick={handlePolygonCanvasClick}
+              />
+            ) : null}
             {imageFrame ? (
               <div
                 className="annotation-image-frame"
                 style={{ left: `${imageFrame.left}%`, top: `${imageFrame.top}%`, width: `${imageFrame.width}%`, height: `${imageFrame.height}%` }}
               >
-                {boxes.map((box) => (
-                  <button
-                    type="button"
-                    key={box.id}
-                    className={`canvas-box label-${box.colorIndex % 3}${box.sourceCd === "MODEL_ASSISTED" ? " is-suggested" : ""}${selectedId === box.id ? " is-selected" : ""}`}
-                    style={{ left: `${box.x}%`, top: `${box.y}%`, width: `${box.width}%`, height: `${box.height}%` }}
-                    onPointerDown={(event) => event.stopPropagation()}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setSelectedId(box.id);
-                      setActiveTool("select");
-                    }}
-                    aria-label={`${box.label}标注`}
-                  >
-                    <span>{box.label}</span>
-                  </button>
-                ))}
+                {visibleBoxes.map(({ box }) => {
+                  if (box.shape.kind === "polygon") {
+                    const bounds = polygonBounds(box.shape.points);
+                    return (
+                      <div className="polygon-entry" key={box.id}>
+                        <svg
+                          className={`canvas-polygon label-${box.colorIndex % 3}${box.sourceCd === "MODEL_ASSISTED" ? " is-suggested" : ""}`}
+                          viewBox="0 0 100 100"
+                          preserveAspectRatio="none"
+                          aria-hidden="true"
+                        >
+                          <polygon
+                            points={box.shape.points.map((point) => `${point.x},${point.y}`).join(" ")}
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        </svg>
+                        <button
+                          type="button"
+                          className={`canvas-box is-polygon-chip label-${box.colorIndex % 3}${box.sourceCd === "MODEL_ASSISTED" ? " is-suggested" : ""}${selectedId === box.id ? " is-selected" : ""}`}
+                          style={{ left: `${bounds.x}%`, top: `${bounds.y}%` }}
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setSelectedId(box.id);
+                            setActiveTool("select");
+                          }}
+                          aria-label={`${box.label}多边形标注`}
+                        >
+                          <span>{box.label}</span>
+                        </button>
+                      </div>
+                    );
+                  }
+                  return (
+                    <button
+                      type="button"
+                      key={box.id}
+                      className={`canvas-box label-${box.colorIndex % 3}${box.sourceCd === "MODEL_ASSISTED" ? " is-suggested" : ""}${selectedId === box.id ? " is-selected" : ""}`}
+                      style={{ left: `${box.shape.x}%`, top: `${box.shape.y}%`, width: `${box.shape.width}%`, height: `${box.shape.height}%` }}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setSelectedId(box.id);
+                        setActiveTool("select");
+                      }}
+                      aria-label={`${box.label}标注`}
+                    >
+                      <span>{box.label}</span>
+                    </button>
+                  );
+                })}
                 {draftBox ? (
                   <div
                     className={`canvas-box is-draft label-${draftBox.colorIndex % 3}`}
-                    style={{ left: `${draftBox.x}%`, top: `${draftBox.y}%`, width: `${draftBox.width}%`, height: `${draftBox.height}%` }}
+                    style={{ left: `${draftBox.shape.kind === "bbox" ? draftBox.shape.x : 0}%`, top: `${draftBox.shape.kind === "bbox" ? draftBox.shape.y : 0}%`, width: `${draftBox.shape.kind === "bbox" ? draftBox.shape.width : 0}%`, height: `${draftBox.shape.kind === "bbox" ? draftBox.shape.height : 0}%` }}
                     aria-hidden="true"
                   >
                     <span>{draftBox.label}</span>
                   </div>
                 ) : null}
-              </div>
-            ) : null}
+                {draftPolygon && draftPolygon.points.length ? (
+                  <svg className="canvas-polygon is-draft" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                    {draftPolygon.points.length >= 3 ? (
+                      <polygon
+                        points={draftPolygon.points.map((point) => `${point.x},${point.y}`).join(" ")}
+                        vectorEffect="non-scaling-stroke"
+                      />
+                    ) : null}
+                    <polyline
+                      className="polygon-outline"
+                      points={[...draftPolygon.points.map((point) => `${point.x},${point.y}`)].join(" ")}
+                    />
+                    {draftPolygon.points.map((point, index) => (
+                      <circle key={index} cx={point.x} cy={point.y} r={0.9} />
+                    ))}
+                  </svg>
+                ) : null}
+                  </div>
+                ) : null}
+            </div>
+            <div className="annotation-zoom-bar" role="group" aria-label="画布缩放">
+              <button
+                type="button"
+                aria-label="缩小"
+                title="缩小"
+                disabled={zoomIndex === 0}
+                onClick={() => setZoomIndex((current) => Math.max(0, current - 1))}
+              >
+                <ZoomOut size={13} />
+              </button>
+              <span>{Math.round(ZOOM_STEPS[zoomIndex] * 100)}%</span>
+              <button
+                type="button"
+                aria-label="放大"
+                title="放大"
+                disabled={zoomIndex >= ZOOM_STEPS.length - 1}
+                onClick={() => setZoomIndex((current) => Math.min(ZOOM_STEPS.length - 1, current + 1))}
+              >
+                <ZoomIn size={13} />
+              </button>
+              <button
+                type="button"
+                aria-label="适应窗口"
+                title="适应窗口"
+                disabled={zoomIndex === 0}
+                onClick={() => setZoomIndex(0)}
+              >
+                <Maximize size={12} />
+              </button>
+            </div>
+            {imageLoading ? <span className="canvas-help">正在获取样本图片…</span> : null}
             {aiBusy ? (
               <div className="annotation-ai-overlay" role="status" aria-live="polite">
                 <LoaderCircle size={26} className="spinner" />
@@ -856,6 +1126,9 @@ export function AutomlAnnotationEditor() {
             ) : null}
             {activeTool === "box" && labelNames.length ? (
               <span className="canvas-help">在图片上按住并拖拽，框选「{labelNames[selectedLabelIndex]}」</span>
+            ) : null}
+            {activeTool === "polygon" && labelNames.length ? (
+              <span className="canvas-help">单击添加顶点描绘「{labelNames[selectedLabelIndex]}」，点击起点或按 Enter 闭合，Esc 取消</span>
             ) : null}
             {!labelNames.length && classes !== null ? (
               <span className="canvas-help">数据集还没有类别，请先在联调台维护类别</span>
@@ -920,27 +1193,46 @@ export function AutomlAnnotationEditor() {
               <span>{labelNames.length}</span>
             </div>
             <div className="annotation-class-list">
-              {labelNames.map((name, index) => (
-                <button
-                  type="button"
-                  className={selectedLabelIndex === index ? "is-active" : ""}
-                  key={`${name}-${index}`}
-                  onClick={() => setSelectedLabelIndex(index)}
-                >
-                  <i className={`class-color color-${index % 3}`} />
-                  <span>{name}</span>
-                  <small>{currentLabelCounts[index] ?? 0}</small>
-                </button>
-              ))}
-              {!labelNames.length ? <p className="annotation-editor-notice">暂无类别。矩形框标注需要先维护类别。</p> : null}
+              {labelNames.map((name, index) => {
+                const hidden = hiddenClasses.has(index);
+                return (
+                  <div className={`annotation-class-row${hidden ? " is-hidden" : ""}`} key={`${name}-${index}`}>
+                    <button
+                      type="button"
+                      className={selectedLabelIndex === index ? "is-active" : ""}
+                      onClick={() => setSelectedLabelIndex(index)}
+                    >
+                      <i className={`class-color color-${index % 3}`} />
+                      <span>{name}</span>
+                      <small>{currentLabelCounts[index] ?? 0}</small>
+                    </button>
+                    <button
+                      type="button"
+                      className="class-eye"
+                      aria-label={hidden ? `显示 ${name} 的标注` : `隐藏 ${name} 的标注`}
+                      aria-pressed={hidden}
+                      title={hidden ? `显示 ${name} 的标注` : `隐藏 ${name} 的标注（画布与列表不再显示，保存不受影响）`}
+                      onClick={() => toggleClassVisibility(index)}
+                    >
+                      {hidden ? <EyeOff size={12} /> : <Eye size={12} />}
+                    </button>
+                  </div>
+                );
+              })}
+              {!labelNames.length ? <p className="annotation-editor-notice">暂无类别。标注工具需要先维护类别。</p> : null}
             </div>
           </section>
           <section>
             <div className="inspector-heading">
-              <div><strong>本张标注</strong><small>{boxes.length} 个矩形框 · 保存时全量覆盖</small></div>
+              <div>
+                <strong>本张标注</strong>
+                <small>
+                  {boxes.length} 条标注{hiddenCount ? ` · 已隐藏 ${hiddenCount} 条` : ""} · 保存时全量覆盖
+                </small>
+              </div>
             </div>
             <div className="instance-list">
-              {boxes.map((box, index) => (
+              {visibleBoxes.map(({ box, index }) => (
                 <div className="instance-row" key={box.id}>
                   <button
                     type="button"
@@ -948,7 +1240,7 @@ export function AutomlAnnotationEditor() {
                     onClick={() => setSelectedId(box.id)}
                   >
                     <i className={`class-color color-${box.colorIndex % 3}`} />
-                    <span>{box.label} {index + 1}</span>
+                    <span>{box.label} {index + 1}{box.shape.kind === "polygon" ? " · 多边形" : ""}</span>
                   </button>
                   <button
                     type="button"
@@ -962,6 +1254,9 @@ export function AutomlAnnotationEditor() {
                 </div>
               ))}
               {!boxes.length ? <p className="annotation-editor-notice">暂无标注。</p> : null}
+              {boxes.length && !visibleBoxes.length ? (
+                <p className="annotation-editor-notice">全部标注已被类别过滤器隐藏，点击类别右侧的小眼睛恢复显示。</p>
+              ) : null}
             </div>
             <button
               className="delete-annotation-button"

@@ -77,7 +77,7 @@ export const toAlgorithmListing = (entry: AutomlAlgorithmMarketListing): Algorit
   capability_output_contract: "detections.v1",
   capability_verified_scenes: entry.classNames ?? [],
   capability_unsupported_conditions: [],
-  endpoint_url: "/v1/detect",
+  endpoint_url: entry.apiAlias ? `/${entry.apiAlias}/detect` : "/v1/detect",
   model_name: entry.name,
   model_version_number: Number(String(entry.version).replace(/[^0-9]/g, "")) || 1,
   task_type: automlTaskType(entry.taskType),

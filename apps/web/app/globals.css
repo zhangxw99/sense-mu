@@ -4906,6 +4906,195 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   margin-top: 4px;
 }
 
+/* 数据质量分析（EDA）：版本统计卡片下方的质量区块 */
+.quality-eda {
+  margin-top: 16px;
+  padding-top: 13px;
+  border-top: 1px solid var(--border);
+}
+
+.quality-eda .quality-section-heading small.quality-eda-error {
+  color: #a23b3b;
+}
+
+.quality-eda-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 14px 22px;
+  margin-top: 12px;
+}
+
+.quality-eda-block {
+  min-width: 0;
+}
+
+.quality-eda-caption {
+  color: #555752;
+  font-size: 8px;
+  font-weight: 560;
+  letter-spacing: 0.02em;
+}
+
+.quality-eda-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.quality-eda-metrics > div {
+  display: grid;
+  gap: 2px;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #fcfcfb;
+}
+
+.quality-eda-metrics span,
+.quality-eda-metrics small {
+  color: #999b95;
+  font-size: 8px;
+}
+
+.quality-eda-metrics strong {
+  color: #3b3d38;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.quality-eda-metrics strong.is-warn {
+  color: #8a6a3b;
+}
+
+.quality-eda-metrics strong.is-bad {
+  color: #a23b3b;
+}
+
+.quality-eda-bars {
+  display: grid;
+  margin-top: 8px;
+}
+
+.quality-eda-bars > div {
+  display: grid;
+  grid-template-columns: minmax(56px, 0.9fr) minmax(60px, 1.4fr) auto minmax(84px, auto);
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  color: #777973;
+  font-size: 8px;
+}
+
+.quality-eda-bars span {
+  overflow: hidden;
+  color: #555752;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quality-eda-bars i {
+  display: block;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #ecece9;
+}
+
+.quality-eda-bars b {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #22231f;
+}
+
+.quality-eda-bars strong {
+  color: #3b3d38;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 8px;
+  font-weight: 560;
+}
+
+.quality-eda-bars small {
+  color: #999b95;
+  text-align: right;
+}
+
+.quality-eda-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.quality-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: #777973;
+  background: #fcfcfb;
+  font-size: 8px;
+}
+
+.quality-flag.is-warn {
+  border-color: #b58a4a4d;
+  color: #8a6a3b;
+  background: #b58a4a14;
+}
+
+.quality-flag.is-bad {
+  border-color: #a23b3b4d;
+  color: #a23b3b;
+  background: #a23b3b14;
+}
+
+.quality-eda-splits {
+  display: grid;
+  gap: 2px;
+  margin-top: 8px;
+}
+
+.quality-eda-splits > div {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 24px;
+  font-size: 8px;
+}
+
+.quality-eda-splits span {
+  flex: none;
+  min-width: 40px;
+  color: #555752;
+}
+
+.quality-eda-splits strong {
+  color: #3b3d38;
+  font-family: var(--font-geist-mono), monospace;
+  font-weight: 560;
+}
+
+.quality-eda-splits em {
+  padding: 1px 6px;
+  border: 1px solid #a23b3b4d;
+  border-radius: 999px;
+  color: #a23b3b;
+  background: #a23b3b14;
+  font-size: 8px;
+  font-style: normal;
+}
+
+.quality-eda-note {
+  margin: 8px 0 0;
+  color: #93958f;
+  font-size: 8px;
+  line-height: 1.55;
+}
+
 .versions-empty,
 .asset-empty {
   display: flex;
@@ -6988,6 +7177,15 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   .overview-next-heading h2 {
     font-size: 19px;
     line-height: 1.22;
+  }
+
+  /* 任务进度卡：按钮组允许收缩换行，避免窄屏横向溢出把左侧标题挤成竖排 */
+  .task-progress-card .task-hero-progress-side {
+    flex-shrink: 1;
+    min-width: 0;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    row-gap: 8px;
   }
 
   .overview-checklist,
@@ -9453,6 +9651,22 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
 
   .overview-next-heading h2 {
     font-size: 19px;
+  }
+
+  /* 任务进度卡：窄屏标题与按钮组上下堆叠，按钮换行铺满整行 */
+  .task-progress-card .overview-next-heading {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+  }
+
+  .task-progress-card .task-hero-progress-side {
+    justify-content: flex-start;
+    gap: 8px;
+  }
+
+  .task-progress-card .task-hero-progress-side .overview-progress-value {
+    margin-left: auto;
   }
 
   .overview-progress-value {
@@ -12739,6 +12953,18 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   font-size: 24px;
   font-weight: 620;
   letter-spacing: -0.04em;
+}
+
+/* 指标卡可点击（跳转对应列表页） */
+a.workbench-metric:hover {
+  background: #fafaf8;
+}
+
+.workbench-metric strong small {
+  color: var(--muted);
+  letter-spacing: 0;
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .workbench-resource-grid {
@@ -16519,9 +16745,61 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   flex: 1;
   min-height: 470px;
   margin: 16px;
-  overflow: hidden;
+  overflow: auto;
   border-radius: 9px;
   background: #1f2224;
+  overscroll-behavior: contain;
+}
+
+/* 缩放层：包住图片与全部标注层，>100% 时画布容器滚动查看，百分比坐标体系不变 */
+.annotation-canvas-scaler {
+  position: relative;
+  min-height: 100%;
+}
+
+/* 画布缩放工具条（悬浮右上，不随缩放） */
+.annotation-zoom-bar {
+  position: absolute;
+  z-index: 5;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 5px;
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 8px;
+  background: rgb(17 18 16 / 62%);
+  backdrop-filter: blur(4px);
+}
+
+.annotation-zoom-bar span {
+  min-width: 34px;
+  color: #fff;
+  font-size: 9px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.annotation-zoom-bar button {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 6px;
+  color: #fff;
+  background: transparent;
+  cursor: pointer;
+}
+
+.annotation-zoom-bar button:hover:not(:disabled) {
+  background: rgb(255 255 255 / 14%);
+}
+
+.annotation-zoom-bar button:disabled {
+  color: rgb(255 255 255 / 32%);
+  cursor: default;
 }
 
 .annotation-canvas.tool-box {
@@ -16590,10 +16868,9 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   background: rgb(129 225 174 / 0.08);
 }
 
+/* AI 建议标注只改线型，边框/标签色仍跟随类别（保持与右侧类别色一致） */
 .canvas-box.is-suggested {
   border-style: dashed;
-  border-color: #d8a8ff;
-  background: rgb(216 168 255 / 0.11);
 }
 
 .canvas-box.is-draft {
@@ -16606,6 +16883,7 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   box-shadow: 0 0 0 2px #fff, 0 0 0 4px rgb(17 18 16 / 0.55);
 }
 
+/* 标签底色半透明：不遮挡原图细节 */
 .canvas-box > span {
   position: absolute;
   top: -21px;
@@ -16613,14 +16891,13 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   padding: 3px 5px;
   border-radius: 4px 4px 0 0;
   color: #111210;
-  background: #8ad3ff;
+  background: rgb(138 211 255 / 0.82);
   font-size: 8px;
   white-space: nowrap;
 }
 
-.canvas-box.label-1 > span { background: #f4d36a; }
-.canvas-box.label-2 > span { background: #81e1ae; }
-.canvas-box.is-suggested > span { background: #d8a8ff; }
+.canvas-box.label-1 > span { background: rgb(244 211 106 / 0.82); }
+.canvas-box.label-2 > span { background: rgb(129 225 174 / 0.82); }
 
 .canvas-help {
   position: absolute;
@@ -16820,6 +17097,47 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   flex-direction: column;
   gap: 4px;
   margin-top: 11px;
+}
+
+/* 标注列表限高滚动：标注多时不撑爆侧栏 */
+.instance-list {
+  max-height: 236px;
+  overflow-y: auto;
+  padding-right: 2px;
+  scrollbar-width: thin;
+}
+
+/* 类别行 = 选择按钮 + 小眼睛（按类显隐标注） */
+.annotation-class-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 26px;
+  gap: 4px;
+  align-items: stretch;
+}
+
+.annotation-class-row.is-hidden .class-color {
+  opacity: 0.25;
+}
+
+.annotation-class-row .class-eye {
+  display: grid;
+  place-items: center;
+  min-height: 34px;
+  padding: 0;
+  border-radius: 8px;
+  color: #a0a29a;
+  background: transparent;
+  cursor: pointer;
+}
+
+.annotation-class-row .class-eye:hover {
+  color: #22231f;
+  background: #efefed;
+}
+
+.annotation-class-row.is-hidden .class-eye {
+  color: #969892;
+  background: #efefed;
 }
 
 .instance-row {
@@ -17947,11 +18265,12 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
 .device-table-head,
 .device-row {
   display: grid;
-  grid-template-columns: minmax(150px, 1.4fr) 80px minmax(110px, 0.8fr) minmax(110px, 1fr) 52px 132px 150px;
+  /* 第 3 列（类型/接入模式/训练能力标识）需容纳「支持训练」chip，min 放宽到 170 */
+  grid-template-columns: minmax(150px, 1.4fr) 80px minmax(170px, 0.9fr) minmax(110px, 1fr) 52px 132px 150px;
   align-items: center;
   gap: 10px;
   padding: 0 16px;
-  min-width: 840px;
+  min-width: 900px;
 }
 
 .device-table-head {
@@ -18257,6 +18576,136 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   margin: 0;
 }
 
+/* 重训对比（继续训练 vs 来源任务）：指标 delta / 参数 diff / 数据集变化 */
+.retrain-compare-section {
+  margin: 0 0 14px;
+}
+
+.retrain-compare-section > strong {
+  display: block;
+  color: #656761;
+  font-size: 9px;
+  font-weight: 600;
+  margin-bottom: 7px;
+}
+
+.retrain-compare-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 8px;
+}
+
+.retrain-compare-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #f9f9f7;
+}
+
+.retrain-compare-metric .retrain-compare-label {
+  color: var(--muted-strong);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.retrain-compare-metric .retrain-compare-values {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.retrain-compare-metric strong {
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+.retrain-compare-metric small {
+  color: var(--muted);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.retrain-compare-delta {
+  font-size: 10px;
+  font-weight: 620;
+  color: #969892;
+  font-variant-numeric: tabular-nums;
+}
+
+.retrain-compare-delta.is-up {
+  color: #1c7c4c;
+}
+
+.retrain-compare-delta.is-down {
+  color: #b3492f;
+}
+
+.retrain-compare-param {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 5px 0;
+  font-size: 10px;
+  border-bottom: 1px dashed var(--border);
+  min-width: 0;
+}
+
+.retrain-compare-param:last-child {
+  border-bottom: none;
+}
+
+.retrain-compare-param .retrain-compare-label {
+  flex: none;
+  min-width: 52px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.retrain-compare-param code {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.retrain-compare-param .retrain-compare-from {
+  color: var(--muted-strong);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.retrain-compare-param .retrain-compare-arrow {
+  color: var(--muted);
+}
+
+.retrain-compare-param .retrain-compare-to {
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+}
+
+.retrain-compare-param small {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.retrain-compare-classes .retrain-compare-class-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  min-width: 0;
+}
+
+.retrain-compare-classes .retrain-compare-class-list > span {
+  color: var(--muted-strong);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
 .device-resource-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
@@ -18301,7 +18750,7 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
 .device-service-head,
 .device-service-row {
   display: grid;
-  grid-template-columns: minmax(150px, 1.4fr) 90px 90px 70px 90px 130px;
+  grid-template-columns: minmax(150px, 1.4fr) 90px 90px 70px 90px 130px 110px;
   align-items: center;
   gap: 10px;
   padding: 0 4px;
@@ -18687,6 +19136,130 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   white-space: nowrap;
 }
 
+.platform-param-grid {
+  grid-template-columns: repeat(auto-fill,minmax(300px,1fr));
+  gap: 10px;
+  display: grid;
+}
+
+.platform-param-card {
+  border: 1px solid var(--border);
+  background: #f9f9f7;
+  border-radius: 10px;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  display: flex;
+}
+
+.platform-param-card-head {
+  align-items: center;
+  gap: 6px;
+  display: flex;
+}
+
+.platform-param-card-head .platform-param-key {
+  border: 1px solid var(--border);
+  min-width: 0;
+  font-family: var(--font-geist-mono), monospace;
+  background: #fff;
+  border-radius: 7px;
+  flex: 1;
+  padding: 5px 8px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.platform-param-card-head select {
+  border: 1px solid var(--border);
+  background: #fff;
+  border-radius: 7px;
+  padding: 4px 5px;
+  font-size: 10px;
+}
+
+.platform-param-advanced-toggle {
+  color: var(--muted-strong);
+  white-space: nowrap;
+  cursor: pointer;
+  align-items: center;
+  gap: 3px;
+  font-size: 9px;
+  display: inline-flex;
+}
+
+.platform-param-card-fields {
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+  display: grid;
+}
+
+.platform-param-card-fields .automl-field span {
+  font-size: 9px;
+}
+
+.platform-param-card-fields input,
+.platform-param-card-fields select {
+  border: 1px solid var(--border);
+  background: #fff;
+  border-radius: 7px;
+  width: 100%;
+  padding: 5px 8px;
+  font-size: 10px;
+}
+
+.platform-param-advanced,
+.training-advanced-params {
+  border: 1px dashed var(--border);
+  background: #00000004;
+  border-radius: 10px;
+  margin-top: 10px;
+}
+
+.training-advanced-params {
+  grid-column: 1/-1;
+  margin-top: 0;
+}
+
+.platform-param-advanced>summary,
+.training-advanced-params>summary {
+  color: var(--muted-strong);
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 12px;
+  font-size: 10px;
+  font-weight: 600;
+  list-style: none;
+  display: flex;
+}
+
+.platform-param-advanced>summary:before,
+.training-advanced-params>summary:before {
+  content: "▸";
+  font-size: 9px;
+  transition: transform .15s;
+}
+
+.platform-param-advanced[open]>summary:before,
+.training-advanced-params[open]>summary:before {
+  transform: rotate(90deg);
+}
+
+.platform-param-advanced>.platform-param-grid {
+  margin: 0;
+  padding: 0 12px 12px;
+}
+
+.training-advanced-params-body {
+  grid-template-columns: repeat(auto-fill,minmax(140px,1fr));
+  gap: 10px 12px;
+  padding: 0 12px 12px;
+  display: grid;
+}
+
 .platform-section-heading {
   display: flex;
   align-items: center;
@@ -18839,6 +19412,122 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   margin-top: auto; /* 趋势线钉在横幅底边，与数据集块等高对齐 */
 }
 
+/* 指标卡质量图例：红=差 绿=优，色相与卡片底色同一色阶（lib/metric-quality.ts） */
+.metric-quality-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 9px 16px 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.metric-quality-scale {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.metric-quality-scale i[data-quality-bar] {
+  width: 120px;
+  height: 8px;
+  border: 1px solid rgb(17 18 16 / 0.08);
+  border-radius: 999px;
+  background: linear-gradient(90deg, hsl(4 64% 86%), hsl(75 50% 88%), hsl(145 64% 82%));
+}
+
+.metric-quality-cap {
+  font-size: 9px;
+  font-weight: 620;
+}
+
+.metric-quality-cap.is-bad {
+  color: hsl(4 62% 40%);
+}
+
+.metric-quality-cap.is-good {
+  color: hsl(145 62% 30%);
+}
+
+/* 训练参数栅格：键值卡式排布（键名小字，值大字，差异默认值提示） */
+.task-params-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 9px;
+}
+
+.task-param {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fafaf8;
+}
+
+.task-param-label {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.task-param-label small {
+  color: rgb(17 18 16 / 0.42);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 9px;
+}
+
+.task-param-value {
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  font-weight: 640;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.task-param-default {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.task-params-raw {
+  margin-top: 12px;
+}
+
+.task-params-raw summary {
+  display: inline-block;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fafaf8;
+  color: var(--muted-strong);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.task-params-raw[open] summary {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.task-params-raw pre {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-top: 0;
+  border-radius: 0 0 10px 10px;
+  background: #fafaf8;
+  font-size: 10px;
+  line-height: 1.6;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 /* 进度卡照项目概览 next-card 风格：上进度区 + 下指标条合为一张卡，状态点按任务状态分色 */
 .task-progress-card {
   min-height: 0;
@@ -18908,6 +19597,48 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   height: 7px;
   border-radius: 50%;
   background: #9a9c96;
+}
+
+/* 侧栏训练任务层级：继续训练的任务在父任务可见时缩进（层级用缩进+悬停提示表达，不放徽标——行宽放不下会折行） */
+.workbench-resource-row.is-nested .workbench-resource-link {
+  padding-left: 20px;
+}
+
+/* 已发布版本 tag：放名字列内部（不新增 grid 列，避免上次折行问题） */
+.workbench-task-name {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.workbench-task-version {
+  flex: none;
+  padding: 1px 4px;
+  border: 1px solid #228b544d;
+  border-radius: 4px;
+  color: #1c7c4c;
+  background: #228b5412;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 8px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.task-version-tag {
+  flex: none;
+  padding: 1px 5px;
+  margin-right: 2px;
+  border: 1px solid #228b544d;
+  border-radius: 5px;
+  color: #1c7c4c;
+  background: #228b5412;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 8px;
+  font-weight: 600;
+  line-height: 1.5;
 }
 
 .workbench-task-dot[data-status="RUNNING"] {
@@ -19173,49 +19904,29 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   font-size: 10px;
 }
 
-/* 设备详情「推理服务」块：当前模型 + 部署来源，点击跳部署详情 */
-.device-inference-card {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 14px;
-  padding: 13px 16px;
-  border: 1px solid #cfd8d0;
-  border-radius: 12px;
-  background: #eef4ef;
-  text-align: left;
+.device-service-deploy {
+  color: #1c5d3b;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   cursor: pointer;
+  background: #eef4ef;
+  border: 1px solid #cfd8d0;
+  border-radius: 999px;
+  align-self: flex-start;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  margin-top: 2px;
+  padding: 2px 8px;
+  font-size: 10px;
+  line-height: 1.5;
+  display: inline-flex;
+  overflow: hidden;
 }
 
-.device-inference-card:hover {
+.device-service-deploy:hover {
+  background: #e2ece4;
   border-color: #2f5d43;
-}
-
-.device-inference-main {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-}
-
-.device-inference-main strong {
-  color: var(--foreground);
-  font-family: var(--font-geist-mono), monospace;
-  font-size: 13px;
-  font-weight: 620;
-}
-
-.device-inference-main small {
-  color: var(--muted-strong);
-  font-size: 10px;
-}
-
-.device-inference-meta {
-  flex-shrink: 0;
-  color: var(--muted);
-  font-size: 10px;
 }
 
 .device-deployment-history {
@@ -19348,7 +20059,7 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
 .task-table-head,
 .task-row {
   display: grid;
-  grid-template-columns: minmax(116px, 1.2fr) 76px minmax(76px, 0.7fr) minmax(82px, 0.8fr) 104px 58px minmax(76px, 0.8fr) 112px 158px;
+  grid-template-columns: minmax(150px, 2fr) 76px minmax(76px, 0.7fr) minmax(82px, 0.8fr) 104px 58px minmax(76px, 0.8fr) 112px 158px;
   align-items: center;
   gap: 10px;
   padding: 0 16px;
@@ -19399,6 +20110,57 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   font-family: var(--font-geist-mono), monospace;
   font-size: 8px;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 任务树：缩进 / 折叠钮 / 重训徽标（「继续训练」血缘层级） */
+.task-tree-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.task-tree-line > a {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-tree-toggle {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 5px;
+  color: var(--muted-strong);
+  background: transparent;
+  cursor: pointer;
+}
+
+.task-tree-toggle:hover {
+  color: var(--foreground);
+  background: #e7e7e4;
+}
+
+.task-tree-toggle.is-leaf {
+  visibility: hidden;
+}
+
+.task-retrain-badge {
+  flex: none;
+  padding: 1px 5px;
+  border: 1px solid #228b544d;
+  border-radius: 5px;
+  color: #1c7c4c;
+  background: #228b5412;
+  font-size: 8px;
+  font-weight: 600;
+  line-height: 1.4;
   white-space: nowrap;
 }
 
@@ -19681,6 +20443,130 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
   margin-top: 14px;
 }
 
+/* 模型版本面板（§9.13 训练版本化）：家族版本表 + 当前任务徽标 */
+.task-version-heading-side {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.task-version-table-wrap {
+  overflow-x: auto;
+}
+
+.task-version-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.task-version-table th,
+.task-version-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.task-version-table th {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.task-version-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.task-version-table tbody tr.is-current {
+  background: rgb(76 175 124 / 0.07);
+}
+
+.task-version-table a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.task-version-table a:hover {
+  color: #2c6e8f;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.task-version-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.task-version-current {
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: #1c7c4c;
+  background: #228b5414;
+  font-size: 9px;
+  font-weight: 620;
+}
+
+/* 继续训练对话框字段 */
+.task-retrain-field {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.task-retrain-label {
+  color: var(--muted-strong);
+  font-size: 10px;
+  font-weight: 620;
+}
+
+.task-retrain-select,
+.task-retrain-field input[type="text"],
+.task-retrain-field input:not([type]) {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: #fff;
+  font-size: 12px;
+}
+
+.task-retrain-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+}
+
+/* 曲线分区：评估指标 / 训练损失 各自成组 */
+.metric-chart-group {
+  display: grid;
+  gap: 10px;
+}
+
+.metric-chart-group + .metric-chart-group {
+  margin-top: 16px;
+}
+
+.metric-chart-group h4 {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 640;
+}
+
+.metric-chart-group h4 small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
+}
+
 .metric-chart-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -19856,6 +20742,12 @@ html[data-sidebar-collapsed="true"] .app-shell .profile-row {
     grid-template-columns: none;
     grid-auto-flow: column;
     grid-auto-columns: minmax(88px, 1fr);
+  }
+
+  /* 任务名是主标识，窄屏下首列保留更多宽度（表格本身可横向滚动） */
+  .task-table-head,
+  .task-row {
+    grid-template-columns: minmax(200px, 2.2fr) repeat(8, minmax(88px, 1fr));
   }
 }
 
@@ -20211,4 +21103,436 @@ a.service-model-link:hover {
 
 .deployment-form-grid .form-static .device-status-chip {
   margin-left: 0;
+}
+
+.polygon-entry {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+}
+
+.canvas-polygon {
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+}
+
+.canvas-polygon polygon {
+  /* non-scaling-stroke（元素属性）保证非等比拉伸与放大下线宽恒定；遮罩与类色一致。
+     描边必须给默认类色：SVG 默认 stroke:none，label-0 不补色分割边缘会整条不可见 */
+  stroke: #8ad3ff;
+  stroke-width: 2px;
+  stroke-linejoin: round;
+  fill: rgb(138 211 255 / 0.14);
+}
+
+.canvas-polygon.label-1 polygon {
+  stroke: #f4d36a;
+  fill: rgb(244 211 106 / 0.14);
+}
+
+.canvas-polygon.label-2 polygon {
+  stroke: #81e1ae;
+  fill: rgb(129 225 174 / 0.14);
+}
+
+/* AI 建议标注只改线型，颜色仍跟随类别（曾用紫色覆盖导致与右侧类别色不一致） */
+.canvas-polygon.is-suggested polygon {
+  stroke-dasharray: 6 4;
+  fill: rgb(138 211 255 / 0.2);
+}
+
+.canvas-polygon.is-suggested.label-1 polygon { fill: rgb(244 211 106 / 0.2); }
+.canvas-polygon.is-suggested.label-2 polygon { fill: rgb(129 225 174 / 0.2); }
+
+.canvas-polygon.is-draft polygon {
+  stroke: #8ad3ff;
+  stroke-dasharray: 5 3;
+  fill: #8ad3ff14;
+}
+
+.canvas-polygon .polygon-outline {
+  fill: none;
+  stroke: #8ad3ff;
+  stroke-width: 2px;
+  stroke-dasharray: 4 3;
+}
+
+.canvas-polygon circle {
+  fill: #fff;
+  stroke: #4a7fa8;
+  stroke-width: 1px;
+}
+
+.canvas-box.is-polygon-chip {
+  pointer-events: auto;
+  border-width: 1px;
+  width: auto;
+  min-width: 0;
+  height: auto;
+  min-height: 0;
+  padding: 1px 4px;
+  transform: translateY(-50%);
+}
+
+.canvas-box.is-polygon-chip>span {
+  border-radius: 3px;
+  display: block;
+  position: static;
+}
+
+.device-service-name {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  min-width: 0;
+}
+
+.device-service-name-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.device-service-name-main .device-service-kind {
+  flex: none;
+  align-self: center;
+  font-weight: 620;
+}
+
+.device-service-name-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.device-service-name .device-service-model {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: #5f6d82;
+  font-size: 9px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 服务名中文标题（英文名在 title）；模型与详情入口同行，避免名称列越堆越高 */
+.device-service-title {
+  font-size: 11px;
+  font-weight: 620;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.device-service-detail-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 560;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.device-service-detail-toggle::after {
+  content: "\25B8";
+  font-size: 8px;
+  line-height: 1;
+}
+
+.device-service-detail-toggle:hover,
+.device-service-detail-toggle.is-open {
+  color: var(--foreground);
+}
+
+.device-service-detail-toggle.is-open::after {
+  content: "\25BE";
+}
+
+/* 展开后横贯整行：浅色内衬 + 左侧细线，键值对平铺，部署定位靠右 */
+.device-service-detail-body {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 24px;
+  margin: -2px 0 8px;
+  padding: 7px 12px 7px 14px;
+  border-left: 2px solid rgb(17 18 16 / 0.16);
+  border-radius: 4px 8px 8px 4px;
+  background: rgb(17 18 16 / 2.5%);
+}
+
+.device-service-detail-row {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 10px;
+}
+
+.device-service-detail-row > span:first-child {
+  flex: none;
+  color: var(--muted);
+}
+
+.device-service-detail-row > :last-child {
+  overflow: hidden;
+  color: var(--foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.device-service-detail-row code {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 10px;
+}
+
+.device-service-detail-body .device-service-deploy {
+  margin: 0 0 0 auto;
+}
+
+/* 训练平台主数据 + 训练任务（/constants /training-platforms /training-tasks） */
+.automl-field textarea {
+  border: 1px solid var(--sensemu-border, #cbd5e1);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  background: transparent;
+  color: inherit;
+  resize: vertical;
+}
+
+.secondary-button.is-deployed {
+  color: #1c7c4c;
+  background: #228b5414;
+  border-color: #228b5473;
+}
+
+.task-deploy-active-hint {
+  color: #1c6b44;
+  background: #228b5412;
+  border: 1px solid #228b544d;
+  border-radius: 8px;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 0 0 12px;
+  padding: 9px 11px;
+  font-size: 10px;
+  line-height: 1.6;
+  display: flex;
+}
+
+.task-deploy-active-hint svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.task-deploy-alias-field {
+  background: #11121008;
+  border: 1px solid #1112101a;
+  border-radius: 8px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+}
+
+.task-deploy-alias-label {
+  margin-bottom: 6px;
+  font-size: 10px;
+  font-weight: 620;
+  display: block;
+}
+
+.task-deploy-alias-input {
+  background: #fff;
+  border: 1px solid #11121029;
+  border-radius: 6px;
+  align-items: center;
+  gap: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.task-deploy-alias-input input {
+  border: none;
+  outline: none;
+  flex: 1;
+  min-width: 0;
+  padding: 7px 8px;
+  font-family: Geist Mono,Geist Mono Fallback,monospace;
+  font-size: 11px;
+}
+
+.task-deploy-alias-static {
+  color: #5f6d82;
+  white-space: nowrap;
+  background: #1112100d;
+  padding: 7px 8px;
+  font-family: Geist Mono,Geist Mono Fallback,monospace;
+  font-size: 11px;
+}
+
+.task-deploy-alias-field>small {
+  color: #5f6d82;
+  margin-top: 6px;
+  font-size: 9px;
+  line-height: 1.6;
+  display: block;
+}
+
+.endpoint-input .service-endpoint-copy {
+  color: #111210;
+  cursor: pointer;
+  background: #fff;
+  border: 1px solid #11121029;
+  border-radius: 6px;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  padding: 4px 9px;
+  font-size: 10px;
+  display: inline-flex;
+}
+
+.endpoint-input .service-endpoint-copy:hover {
+  border-color: #11121066;
+}
+
+.endpoint-input .service-endpoint-copy:active {
+  transform: translateY(1px);
+}
+
+.device-service-kind {
+  color: #8a6d1f;
+  background: #8a6d1f1a;
+  border-radius: 4px;
+  align-self: flex-start;
+  padding: 1px 5px;
+  font-size: 8px;
+}
+
+.device-service-actions {
+  align-items: center;
+  gap: 6px;
+  display: flex;
+}
+
+.device-service-action {
+  color: #111210;
+  cursor: pointer;
+  background: #fff;
+  border: 1px solid #11121029;
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 9px;
+}
+
+.device-service-action:hover:not(:disabled) {
+  border-color: #11121073;
+}
+
+.device-service-action.is-danger {
+  color: #b3261e;
+  border-color: #b3261e59;
+}
+
+.device-service-action.is-danger:hover:not(:disabled) {
+  border-color: #b3261e;
+}
+
+.device-service-action:disabled {
+  opacity: .45;
+  cursor: default;
+}
+
+.device-service-notice {
+  margin: 8px 0 0;
+}
+
+.algorithm-demo-polygon-entry {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+}
+
+.algorithm-demo-polygon {
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+}
+
+.algorithm-demo-polygon path {
+  stroke: var(--demo-region-color,#c98af5);
+  stroke-width: 2px;
+  stroke-linejoin: round;
+  fill: var(--demo-region-color,#c98af5);
+}
+
+@supports (color:color-mix(in lab, red, red)) {
+  .algorithm-demo-polygon path{fill:color-mix(in srgb, var(--demo-region-color,#c98af5) 26%, transparent)}
+}
+
+/* 分割实例的外围检测框（ultralytics show 语义：mask + bbox + label） */
+.algorithm-demo-polygon .algorithm-demo-polygon-frame {
+  fill: none;
+  stroke: var(--demo-region-color,#c98af5);
+  stroke-width: 2px;
+}
+
+.algorithm-demo-box.is-polygon-chip {
+  border-width: 1px;
+  border-color: var(--demo-region-color,#c98af5);
+  background: var(--demo-region-color,#c98af5);
+  color: #fff;
+  width: auto;
+  min-width: 0;
+  height: auto;
+  min-height: 0;
+  padding: 1px 5px;
+  /* 标签悬于检测框上方外侧，不再压住掩码区域；贴顶时 is-inside 放框内。
+     必须用独立 translate 属性而非 transform：box 入场动画 fill=both 会永久持有
+     transform:scale(1) 并覆盖静态 transform，平移会整体失效、标签落回框内 */
+  translate: 0 calc(-100% - 2px);
+}
+
+.algorithm-demo-box.is-polygon-chip.is-inside {
+  translate: none;
+}
+
+.algorithm-demo-box.is-polygon-chip>small {
+  border-radius: 3px;
+  display: block;
+  position: static;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+}
+
+.device-service-chip[data-status=STALE] {
+  color: #6b6f66;
+  background: #6b6f661f;
+}
+
+/* 设备列表「支持训练/仅推理」标识：复用状态 chip 配色，附在类型/接入模式后 */
+.device-training-chip {
+  margin-left: 8px;
+  vertical-align: 1px;
 }

@@ -32,8 +32,9 @@ test("server-renders the SenseMu product shell", async () => {
   const html = await response.text();
   assert.match(html, /<title>SenseMu · 视觉 AI 工作平台<\/title>/i);
   assert.match(html, /<h1>工作台<\/h1>/);
-  assert.match(html, /新建项目/);
-  assert.match(html, /训练项目/);
+  assert.match(html, /新建数据集/);
+  assert.match(html, /新建训练/);
+  assert.match(html, /训练任务/);
   assert.match(html, /最近活动/);
   assert.match(html, /算法市场/);
   assert.match(html, /数据市场/);
@@ -46,7 +47,7 @@ test("server-renders the SenseMu product shell", async () => {
   assert.match(html, /aria-label="工作台对象"/);
   assert.match(html, /数据与标注/);
   assert.match(html, /aria-label="新建数据集"/);
-  assert.match(html, /aria-label="新建项目"/);
+  assert.match(html, /aria-label="新建训练"/);
   assert.match(html, /aria-label="工作台快捷入口"/);
   assert.match(html, /aria-label="收起侧栏"/);
   assert.match(html, /aria-label="打开主菜单"/);
@@ -96,12 +97,12 @@ test("server-renders the data workbench route", async () => {
   assert.doesNotMatch(html, /创建第一个工作区|创建视觉项目|视频流待接入/);
 });
 
-test("server-renders the automl workbench route with token panel", async () => {
-  const response = await render("/studio/automl");
+test("server-renders the automl test workbench route with token panel", async () => {
+  const response = await render("/test/automl");
   assert.equal(response.status, 200);
 
   const html = await response.text();
-  assert.match(html, /<title>AutoML 数据联调 · SenseMu<\/title>/i);
+  assert.match(html, /<title>AutoML 联调测试 · SenseMu<\/title>/i);
   assert.match(html, /后端访问令牌/);
   assert.match(html, /aria-label="后端访问令牌"/);
   assert.match(html, /算法库/);
@@ -111,17 +112,26 @@ test("server-renders the automl workbench route with token panel", async () => {
   assert.doesNotMatch(html, /AutoML 接口尚未配置/);
 });
 
+test("redirects the legacy automl workbench route to /test/automl", async () => {
+  const response = await render("/studio/automl");
+  assert.ok(
+    [301, 302, 303, 307, 308].includes(response.status)
+      || response.url.endsWith("/test/automl"),
+    `expected redirect to /test/automl, got status ${response.status} url ${response.url}`,
+  );
+});
+
 test("server-renders the automl visual annotation editor route", async () => {
   const withoutContext = await render("/studio/automl/annotate");
   assert.equal(withoutContext.status, 200);
-  assert.match(await withoutContext.text(), /请从 AutoML 联调台的样本列表进入标注/);
+  assert.match(await withoutContext.text(), /请从 AutoML 联调测试台的样本列表进入标注/);
 
   const response = await render("/studio/automl/annotate?dataset=910001&version=920001&task=950001&item=940001");
   assert.equal(response.status, 200);
 
   const html = await response.text();
   assert.match(html, /<title>AutoML 样本标注 · SenseMu<\/title>/i);
-  assert.match(html, /返回联调台/);
+  assert.match(html, /返回联调测试台/);
   assert.match(html, /aria-label="标注任务 ID"/);
   assert.match(html, /保存标注/);
   assert.match(html, /aria-label="标注画布"/);

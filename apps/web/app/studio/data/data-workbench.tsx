@@ -11,6 +11,7 @@ import {
   Database,
   FileCheck2,
   FileImage,
+  Gauge,
   Grid2X2,
   Layers3,
   List,
@@ -37,6 +38,7 @@ import {
   type AutomlDatasetModel,
   type AutomlId,
   type AutomlVersionDetail,
+  type AutomlVersionQuality,
   type AutomlAnnotation,
   type AutomlAnnotationTaskSummary,
   createAutomlDatasetClass,
@@ -46,6 +48,7 @@ import {
   createAutomlStandardAnnotationTask,
   deleteAutomlDatasetClass,
   getAutomlDatasetVersionDetails,
+  getAutomlDatasetVersionQuality,
   getAutomlFileUrls,
   listAutomlAnnotationTasks,
   listAutomlAnnotations,
@@ -54,6 +57,8 @@ import {
   listAutomlDatasetModels,
   listAutomlDatasets,
   appendAutomlDatasetFiles,
+  createAutomlDatasetZipImportTask,
+  getAutomlTask,
   importAutomlItems,
   publishAutomlVersionToMarket,
   unpublishAutomlVersionFromMarket,
@@ -72,17 +77,19 @@ type ConnectionState = "checking" | "online" | "offline";
 type DataView = "assets" | "annotation" | "classes" | "models" | "versions";
 type SplitFilter = "all" | "train" | "val" | "test";
 
+// 码值与常量表 TASK_TYPE 分组对齐（automl-api.md §8.1）
 const TASK_TYPES = [
   { value: "OBJECT_DETECTION", label: "目标检测", description: "用矩形框定位对象" },
-  { value: "CLASSIFICATION", label: "图像分类", description: "为整张图像分配类别" },
-  { value: "SEGMENTATION", label: "图像分割", description: "逐像素划分对象区域" },
+  { value: "IMAGE_CLASSIFICATION", label: "图像分类", description: "为整张图像分配类别" },
+  { value: "INSTANCE_SEGMENTATION", label: "实例分割", description: "用多边形描绘对象轮廓" },
 ] as const;
 
 const taskTypeLabels: Record<string, string> = {
   OBJECT_DETECTION: "目标检测",
+  IMAGE_CLASSIFICATION: "图像分类",
   CLASSIFICATION: "图像分类",
-  SEGMENTATION: "语义分割",
   INSTANCE_SEGMENTATION: "实例分割",
+  SEGMENTATION: "实例分割",
   POSE: "姿态估计",
   OCR: "文字识别",
 };
@@ -91,6 +98,7 @@ const splitLabels: Record<string, string> = {
   train: "训练集",
   val: "验证集",
   test: "测试集",
+  UNASSIGNED: "未划分",
 };
 
 const taskStatusLabels: Record<string, string> = {
@@ -102,7 +110,7 @@ const taskStatusLabels: Record<string, string> = {
 
 const versionStatusLabels: Record<string, string> = {
   BUILDING: "生成中",
-  READY: "已就绪",
+  READY: "已发布",
   INVALID: "已失效",
 };
 
@@ -156,6 +164,9 @@ export function DataWorkbench() {
   const [dataset, setDataset] = useState<AutomlDataset | null>(null);
   const [versionDetail, setVersionDetail] = useState<AutomlVersionDetail | null>(null);
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
+  // 当前选中版本的数据质量分析（EDA），随版本切换重新加载
+  const [quality, setQuality] = useState<AutomlVersionQuality | null>(null);
+  const [qualityState, setQualityState] = useState<"idle" | "loading" | "error">("idle");
   const [items, setItems] = useState<AutomlDatasetItem[]>([]);
   const [itemsTotal, setItemsTotal] = useState<AutomlId>(0);
   const [allTotal, setAllTotal] = useState<AutomlId>(0);
@@ -297,6 +308,30 @@ export function DataWorkbench() {
     }
   }, []);
 
+  // 数据质量分析只随版本变化拉取，与样本分页解耦
+  useEffect(() => {
+    setQuality(null);
+    if (!datasetId || !versionId) {
+      setQualityState("idle");
+      return;
+    }
+    setQualityState("loading");
+    let cancelled = false;
+    getAutomlDatasetVersionQuality(datasetId, versionId)
+      .then((result) => {
+        if (cancelled) return;
+        setQuality(result);
+        setQualityState("idle");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setQualityState("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [datasetId, versionId]);
+
   useEffect(() => {
     if (!datasetId || !versionId) {
       setTasks([]);
@@ -379,8 +414,40 @@ export function DataWorkbench() {
 
   async function createDataset(event: FormEvent) {
     event.preventDefault();
-    if (datasetSourceFiles.some(isZipFile)) {
-      setError("zip 包暂不参与创建数据集：请先创建数据集，再通过「导入素材」单独上传 zip");
+    const stagedZips = datasetSourceFiles.filter(isZipFile);
+    if (stagedZips.length) {
+      // zip 单独成流：建空数据集 → 上传 zip → 异步解压导入
+      if (datasetSourceFiles.length > 1 || stagedZips.length > 1) {
+        setError("zip 包需单独使用，不能与图片/标注混选，一次一个");
+        return;
+      }
+      setBusy(true);
+      setError(null);
+      try {
+        setUploadProgress("正在创建数据集…");
+        const created = await createAutomlEmptyDataset({
+          name: datasetName.trim(),
+          description: datasetDescription.trim() || undefined,
+          taskType: newDatasetTaskType,
+        });
+        await runZipImportWithPolling(String(created.id), stagedZips[0]);
+        setUploadProgress(null);
+        setDatasetSourceFiles([]);
+        setDatasetName("");
+        setDatasetDescription("");
+        setDatasetClassNames("");
+        setCreationOpen(false);
+        setDataset(created);
+        notifyAutomlDatasetsChanged();
+        await loadDatasets(String(created.id));
+        await loadDatasetContext(String(created.id), null);
+        setNotice(`数据集已创建，zip 导入完成`);
+      } catch (reason) {
+        setUploadProgress(null);
+        setError(reason instanceof Error ? reason.message : "数据集创建或 zip 导入失败");
+      } finally {
+        setBusy(false);
+      }
       return;
     }
     const hasAnnotations = datasetSourceFiles.some(isAnnotationFile);
@@ -544,6 +611,44 @@ export function DataWorkbench() {
     return payloadItems.length;
   }
 
+  // zip 导入：上传 → 创建异步解压任务 → 轮询到终态（最长 5 分钟）
+  async function runZipImportWithPolling(targetDatasetId: string, zipFile: File) {
+    setNotice("正在上传 zip 包…");
+    const uploaded = await uploadAutomlFile(zipFile);
+    setNotice("zip 已上传，创建解压导入任务…");
+    const task = await createAutomlDatasetZipImportTask(targetDatasetId, uploaded.fileId);
+    const deadline = Date.now() + 5 * 60_000;
+    let current = task;
+    while (current.statusCd === "QUEUED" || current.statusCd === "RUNNING") {
+      if (Date.now() > deadline) {
+        throw new Error("zip 导入超时（5 分钟），任务仍在后台执行，可稍后刷新样本查看结果");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      current = await getAutomlTask(task.id);
+      if (current.progressMessage) setNotice(`zip 导入中：${current.progressMessage}`);
+    }
+    if (current.statusCd !== "SUCCEEDED") {
+      throw new Error(current.errorMessage || `zip 导入未成功（${current.statusCd}）`);
+    }
+    return current;
+  }
+
+  // 导入/快照后刷新版本与样本列表，跳到「全部」最后一页展示新样本
+  async function refreshAfterImport(targetDatasetId: string) {
+    const detail = await getAutomlDatasetVersionDetails(targetDatasetId);
+    const latest = detail.versions.reduce((acc, cur) => (Number(cur.id) > Number(acc?.id ?? 0) ? cur : acc));
+    const targetVersionId = String(latest.id);
+    setVersionDetail(detail);
+    setSelectedVersionId(targetVersionId);
+    void loadSplitCounts(targetDatasetId, targetVersionId);
+    setSplitFilter("all");
+    const lastPage = Math.max(1, Math.ceil(Number(latest.sampleCount) / ITEMS_PAGE_LIMIT));
+    setItemsPage(lastPage);
+    const refreshed = await listAutomlDatasetItems(targetDatasetId, targetVersionId, { page: lastPage, limit: ITEMS_PAGE_LIMIT });
+    setItems(refreshed.rows);
+    setItemsTotal(refreshed.total);
+  }
+
   async function importFiles(event: ChangeEvent<HTMLInputElement>) {
     const input = event.currentTarget;
     const files = Array.from(input.files ?? []).filter(
@@ -564,10 +669,12 @@ export function DataWorkbench() {
       setBusy(true);
       setError(null);
       try {
-        await uploadAutomlFile(zipFiles[0]);
-        setNotice("zip 包已上传；解压解析将在异步任务框架中提供");
+        await runZipImportWithPolling(datasetId, zipFiles[0]);
+        await refreshAfterImport(datasetId);
+        notifyAutomlDatasetsChanged();
+        setNotice("zip 导入完成");
       } catch (reason) {
-        setError(reason instanceof Error ? reason.message : "zip 上传失败");
+        setError(reason instanceof Error ? reason.message : "zip 导入失败");
       } finally {
         setBusy(false);
       }
@@ -585,19 +692,7 @@ export function DataWorkbench() {
         const version = await appendAutomlDatasetFiles(datasetId, uploaded.map((entry) => entry.fileId));
         setNotice(`已导入 ${uploaded.length} 个素材到 ${version.version}`);
       }
-      // 刷新以接口返回的目标版本为准，跳到「全部」最后一页展示新样本
-      const detail = await getAutomlDatasetVersionDetails(datasetId);
-      const latest = detail.versions.reduce((acc, cur) => (Number(cur.id) > Number(acc?.id ?? 0) ? cur : acc));
-      const targetVersionId = String(latest.id);
-      setVersionDetail(detail);
-      setSelectedVersionId(targetVersionId);
-      void loadSplitCounts(datasetId, targetVersionId);
-      const lastPage = Math.max(1, Math.ceil(Number(latest.sampleCount) / ITEMS_PAGE_LIMIT));
-      setSplitFilter("all");
-      setItemsPage(lastPage);
-      const refreshed = await listAutomlDatasetItems(datasetId, targetVersionId, { page: lastPage, limit: ITEMS_PAGE_LIMIT });
-      setItems(refreshed.rows);
-      setItemsTotal(refreshed.total);
+      await refreshAfterImport(datasetId);
       notifyAutomlDatasetsChanged();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "素材导入失败");
@@ -812,6 +907,10 @@ export function DataWorkbench() {
   }, [annotationPreviewOn, visibleItems, datasetId, versionId]);
   const totalSampleCount = selectedVersion?.sampleCount ?? 0;
   const activeTaskType = dataset?.taskType ?? "OBJECT_DETECTION";
+  // 头部徽章跟随最新版本状态：无版本=草稿；BUILDING=素材导入中；READY=已发布
+  const datasetBadgeLabel = !versions.length
+    ? "草稿"
+    : versionStatusLabels[selectedVersion?.statusCd ?? ""] ?? "素材导入中";
   const taskTypeLabel = taskTypeLabels[activeTaskType] ?? activeTaskType;
   const trainingHref = "/studio/training";
 
@@ -894,14 +993,14 @@ export function DataWorkbench() {
                 <input
                   id="dataset-source-file-input"
                   type="file"
-                  accept="image/jpeg,image/png,image/webp,.txt,.xml"
+                  accept="image/jpeg,image/png,image/webp,.txt,.xml,.zip"
                   multiple
                   onChange={selectDatasetSourceFiles}
                   disabled={busy}
                 />
                 <span className="dataset-source-dropzone-icon"><UploadCloud size={21} /></span>
                 <strong>{datasetSourceFiles.length ? "继续添加图片" : "拖放图片到这里"}</strong>
-                <small>支持图片，或图片 + 同名 YOLO txt / VOC xml 标注（自动建类别与标注）；纯图片可直接创建，不选图片则创建空数据集</small>
+                <small>支持图片、图片 + 同名 YOLO txt / VOC xml 标注（自动建类别与标注），或单个 zip 包（YOLO / CSV 结构自动解析）；不选文件则创建空数据集</small>
               </label>
               {datasetSourceFiles.length ? (
                 <div className="dataset-source-file-list" aria-live="polite">
@@ -999,8 +1098,8 @@ export function DataWorkbench() {
                     {activeTaskType === "OBJECT_DETECTION" ? <Layers3 size={13} /> : <Tag size={13} />}
                     {taskTypeLabel}
                   </span>
-                  <span className={`dataset-object-state${versions.length ? " is-ready" : ""}`}>
-                    <i />{versions.length ? "已就绪" : "草稿"}
+                  <span className={`dataset-object-state${versions.length && selectedVersion?.statusCd === "READY" ? " is-ready" : ""}`}>
+                    <i />{datasetBadgeLabel}
                   </span>
                 </div>
                 <p>{dataset.description || `${taskTypeLabel}数据集（${dataset.datasetCode}）`}</p>
@@ -1044,17 +1143,31 @@ export function DataWorkbench() {
                     <p>{versionId ? `${splitFilter === "all" ? Number(itemsTotal) : visibleItems.length} 项 · ${selectedVersion?.version ?? ""}${selectedVersion?.statusCd === "READY" ? " · 已发布" : ""}${selectedVersion?.marketStatusCd === "LISTED" ? " · 已上架数据市场" : ""}` : "当前数据集还没有版本"}</p>
                   </div>
                   <div className="asset-heading-actions">
-                    <label className={`secondary-button compact dataset-upload-button${busy ? " is-busy" : ""}`}>
-                      <input
-                        type="file"
-                        accept="image/jpeg,image/png,image/webp,.txt,.xml,.zip"
-                        multiple
-                        disabled={busy || selectedVersion?.statusCd === "READY"}
-                        onChange={(event) => void importFiles(event)}
-                      />
-                      {busy ? <LoaderCircle size={14} className="spinner" /> : <UploadCloud size={14} />}
-                      导入素材
-                    </label>
+                    {selectedVersion?.statusCd === "READY" ? (
+                      <button
+                        className="secondary-button compact"
+                        type="button"
+                        title="当前版本已发布，不可导入素材——请先创建新版本"
+                        onClick={() =>
+                          setNotice(`当前版本 ${selectedVersion.version} 已发布，不可直接导入素材：请先点右上角「创建新版本」，再在新版本上导入`)
+                        }
+                      >
+                        <UploadCloud size={14} />
+                        导入素材
+                      </button>
+                    ) : (
+                      <label className={`secondary-button compact dataset-upload-button${busy ? " is-busy" : ""}`}>
+                        <input
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp,.txt,.xml,.zip"
+                          multiple
+                          disabled={busy}
+                          onChange={(event) => void importFiles(event)}
+                        />
+                        {busy ? <LoaderCircle size={14} className="spinner" /> : <UploadCloud size={14} />}
+                        导入素材
+                      </label>
+                    )}
                     {versionId ? (
                       <button
                         className={`secondary-button compact${annotationPreviewOn ? " is-active" : ""}`}
@@ -1171,7 +1284,7 @@ export function DataWorkbench() {
                           </select>
                           <Link
                             className="annotation-upload"
-                            href={`/studio/automl/annotate?dataset=${encodeURIComponent(datasetId ?? "")}&version=${encodeURIComponent(versionId ?? "")}&item=${encodeURIComponent(String(item.itemId))}&from=data`}
+                            href={`/studio/automl/annotate?dataset=${encodeURIComponent(datasetId ?? "")}&version=${encodeURIComponent(versionId ?? "")}&item=${encodeURIComponent(String(item.itemId))}&from=data&type=${encodeURIComponent(dataset?.taskType ?? "")}`}
                           >
                             {Number(item.annotatedItemCount) > 0 ? <FileCheck2 size={13} /> : <UploadCloud size={13} />}
                             <span>{Number(item.annotatedItemCount) > 0 ? "查看标注" : "标注"}</span>
@@ -1216,7 +1329,7 @@ export function DataWorkbench() {
                         </select>
                         <Link
                           className="annotation-upload"
-                          href={`/studio/automl/annotate?dataset=${encodeURIComponent(datasetId ?? "")}&version=${encodeURIComponent(versionId ?? "")}&item=${encodeURIComponent(String(item.itemId))}&from=data`}
+                          href={`/studio/automl/annotate?dataset=${encodeURIComponent(datasetId ?? "")}&version=${encodeURIComponent(versionId ?? "")}&item=${encodeURIComponent(String(item.itemId))}&from=data&type=${encodeURIComponent(dataset?.taskType ?? "")}`}
                         >
                           {Number(item.annotatedItemCount) > 0 ? <FileCheck2 size={13} /> : <UploadCloud size={13} />}
                           <span>{Number(item.annotatedItemCount) > 0 ? "查看标注" : "标注"}</span>
@@ -1279,7 +1392,7 @@ export function DataWorkbench() {
                           {taskStatusLabels[task.statusCd] ?? task.statusCd}
                         </span>
                         <Link
-                          href={`/studio/automl/annotate?dataset=${encodeURIComponent(datasetId ?? "")}&version=${encodeURIComponent(versionId ?? "")}&task=${encodeURIComponent(String(task.id))}`}
+                          href={`/studio/automl/annotate?dataset=${encodeURIComponent(datasetId ?? "")}&version=${encodeURIComponent(versionId ?? "")}&task=${encodeURIComponent(String(task.id))}&type=${encodeURIComponent(dataset?.taskType ?? "")}`}
                           className="task-open-link"
                         >
                           {task.statusCd === "COMPLETED" ? "查看" : "继续"}<ChevronRight size={14} />
@@ -1495,6 +1608,101 @@ export function DataWorkbench() {
                           ) : <p className="quality-empty">当前版本尚无类别标注分布。</p>}
                         </section>
                       </div>
+                      <section className="quality-eda" aria-label="数据质量分析">
+                        <div className="quality-section-heading">
+                          <Gauge size={14} />
+                          <strong>数据质量分析</strong>
+                          {qualityState === "loading" ? <LoaderCircle size={13} className="spinner" aria-label="加载中" /> : null}
+                          {qualityState === "error" ? <small className="quality-eda-error">加载失败，切换版本可重试</small> : null}
+                          {quality?.imbalanceRatio != null ? (
+                            <span className={`quality-flag${Number(quality.imbalanceRatio) >= 10 ? " is-bad" : Number(quality.imbalanceRatio) >= 3 ? " is-warn" : ""}`}>
+                              类别不均衡比 {Number(quality.imbalanceRatio)}
+                            </span>
+                          ) : null}
+                        </div>
+                        {quality ? (
+                          Number(quality.sampleCount) ? (
+                            <div className="quality-eda-grid">
+                              <div className="quality-eda-block">
+                                <div className="quality-eda-caption">样本与目标</div>
+                                <div className="quality-eda-metrics">
+                                  <div>
+                                    <span>空标注样本</span>
+                                    <strong className={Number(quality.emptySampleCount) ? "is-warn" : ""}>{Number(quality.emptySampleCount)}</strong>
+                                    <small>{quality.emptySampleRatio != null ? `占 ${Number(quality.emptySampleRatio)}%` : "—"}</small>
+                                  </div>
+                                  <div>
+                                    <span>损坏样本</span>
+                                    <strong className={Number(quality.corruptedCount) ? "is-bad" : ""}>{Number(quality.corruptedCount)}</strong>
+                                    <small>无法读取</small>
+                                  </div>
+                                  <div>
+                                    <span>目标总数</span>
+                                    <strong>{Number(quality.boxCount) + Number(quality.polygonCount)}</strong>
+                                    <small>框 {Number(quality.boxCount)} · 多边形 {Number(quality.polygonCount)}</small>
+                                  </div>
+                                  <div>
+                                    <span>平均每样本</span>
+                                    <strong>{quality.avgTargetsPerSample != null ? Number(quality.avgTargetsPerSample) : "—"}</strong>
+                                    <small>单图最多 {quality.maxTargetsPerSample != null ? Number(quality.maxTargetsPerSample) : "—"}</small>
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="quality-eda-block">
+                                <div className="quality-eda-caption">类别目标分布</div>
+                                {quality.classStats.length ? (
+                                  <div className="quality-eda-bars">
+                                    {quality.classStats.map((stat) => (
+                                      <div key={stat.className}>
+                                        <span>{stat.className}</span>
+                                        <i aria-hidden="true"><b style={{ width: `${Math.min(100, Number(stat.sharePercent) || 0)}%` }} /></i>
+                                        <strong>{Number(stat.targetCount)}</strong>
+                                        <small>{Number(stat.sampleCount)} 样本 · {Number(stat.sharePercent)}%</small>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : <p className="quality-empty">还没有有效目标标注。</p>}
+                              </div>
+                              <div className="quality-eda-block">
+                                <div className="quality-eda-caption">标注异常</div>
+                                <div className="quality-eda-flags">
+                                  <span className={`quality-flag${Number(quality.anomalies.outOfBoundsCount) ? " is-bad" : ""}`}>
+                                    越界框 {Number(quality.anomalies.outOfBoundsCount)}
+                                  </span>
+                                  <span className={`quality-flag${Number(quality.anomalies.invalidGeometryCount) ? " is-bad" : ""}`}>
+                                    无效几何 {Number(quality.anomalies.invalidGeometryCount)}
+                                  </span>
+                                  <span className={`quality-flag${Number(quality.anomalies.tinyBoxCount) ? " is-warn" : ""}`}>
+                                    过小目标 {Number(quality.anomalies.tinyBoxCount)}{quality.anomalies.tinyBoxShare != null ? ` · 占 ${Number(quality.anomalies.tinyBoxShare)}%` : ""}
+                                  </span>
+                                </div>
+                                <p className="quality-eda-note">过小目标 = 归一化面积 &lt; 0.0001（640px 图上约 6×6 像素）；无效几何含缺几何、零尺寸框和点数不足 3 的多边形。</p>
+                              </div>
+                              <div className="quality-eda-block">
+                                <div className="quality-eda-caption">划分一致性</div>
+                                {quality.splitStats.length ? (
+                                  <div className="quality-eda-splits">
+                                    {quality.splitStats.map((split) => (
+                                      <div key={split.splitType}>
+                                        <span>{splitLabels[split.splitType] ?? split.splitType}</span>
+                                        <strong>{Number(split.sampleCount)} 样本 · {Number(split.targetCount)} 目标</strong>
+                                        {split.missingClassNames.length ? (
+                                          <em title="该划分缺少这些类别的目标，训练/验证指标会失真">缺 {split.missingClassNames.join("、")}</em>
+                                        ) : null}
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : <p className="quality-empty">还没有样本划分。</p>}
+                                {quality.resolutionStats.length ? (
+                                  <p className="quality-eda-note">
+                                    分辨率分布 {quality.resolutionStats.map((stat) => `${stat.width}×${stat.height} ×${Number(stat.count)}`).join("，")}
+                                  </p>
+                                ) : null}
+                              </div>
+                            </div>
+                          ) : <p className="quality-empty">该版本还没有样本，导入后可做质量分析。</p>
+                        ) : null}
+                      </section>
                     </div>
                   </article>
                 ) : null}
